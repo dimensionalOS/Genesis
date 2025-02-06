@@ -1,135 +1,276 @@
 import numpy as np
 import genesis as gs
 from scipy.spatial.transform import Rotation as R
-import time
-########################## Initialization ##########################
-gs.init(backend=gs.gpu)
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
 
-# Create the simulation scene.
-scene = gs.Scene(
-    viewer_options = gs.options.ViewerOptions(
-        camera_pos    = (0, -5, 2),
-        camera_lookat = (0, 0, 0.5),
-        camera_fov    = 30,
-        res           = (960, 640),
-        max_FPS       = 60,
-    ),
-    sim_options = gs.options.SimOptions(
-        dt = 0.01,
-    ),
-    show_viewer = True,
-)
+class JointStateSubscriber(Node):
+    def __init__(self, joint_names):
+        super().__init__('joint_state_subscriber')
+        self.subscription = self.create_subscription(
+            JointState,
+            'joint_states',
+            self.joint_state_callback,
+            10
+        )
+        self.joint_positions = {name: 0.0 for name in joint_names}
 
-########################## Entities ##########################
-# Add a ground plane.
-plane = scene.add_entity(gs.morphs.Plane())
+    def joint_state_callback(self, msg):
+        for name, position in zip(msg.name, msg.position):
+            if name in self.joint_positions:
+                self.joint_positions[name] = position
 
-# Load your robot from the URDF file.
-robot = scene.add_entity(
-    gs.morphs.URDF(
-        file  = '../assets/alfred_base_descr.urdf',
-        pos   = (0, 0, 0),
-        euler = (0, 0, 0),
-        links_to_keep = ['head_cam_rgb_camera_frame', 'chest_cam_rgb_camera_frame']
+def main():
+    ########################## Initialization ##########################
+    # Initialize ros2
+    rclpy.init()
+    ########################## Joint Mapping ##########################
+    # Define the list of controllable (actuated) joint names.
+    # We exclude any joints that are fixed.
+    joint_names = [
+        # Base actuated joints (continuous or prismatic)
+        "right_wheel_joint",       # type: continuous
+        "left_wheel_joint",        # type: continuous
+        "pillar_platform_joint",   # type: prismatic
+        "pan_joint",               # type: revolute
+        "tilt_joint",              # type: revolute
+        # (laser_joint is fixed and is not included)
+
+        # Left arm actuated joints (from the ros2_control block)
+        "L_joint1",  # revolute
+        "L_joint2",  # revolute
+        "L_joint3",  # revolute
+        "L_joint4",  # revolute
+        "L_joint5",  # revolute
+        "L_joint6",  # revolute
+        # Exclude L_joint_eef and L_gripper_base_joint (both fixed)
+        "L_jaw_1_joint",  # prismatic (actuated)
+        "L_jaw_2_joint",  # prismatic (actuated; mimic joint)
+
+        # Right arm actuated joints (from the ros2_control block)
+        "R_joint1",  # revolute
+        "R_joint2",  # revolute
+        "R_joint3",  # revolute
+        "R_joint4",  # revolute
+        "R_joint5",  # revolute
+        "R_joint6",  # revolute
+        "R_joint7",  # revolute
+        # Exclude R_joint_eef and R_gripper_base_joint (both fixed)
+        "R_jaw_1_joint",  # prismatic (actuated)
+        "R_jaw_2_joint",  # prismatic (actuated; mimic joint)
+    ]
+    joint_subscriber = JointStateSubscriber(joint_names)
+
+    # Initialize Genesis with the GPU backend.
+    gs.init(backend=gs.gpu)
+
+    # Create the simulation scene.
+    scene = gs.Scene(
+        viewer_options=gs.options.ViewerOptions(
+            camera_pos    = (0, -5, 2),
+            camera_lookat = (0, 0, 0.5),
+            camera_fov    = 30,
+            res           = (960, 640),
+            max_FPS       = 60,
+        ),
+        sim_options=gs.options.SimOptions(
+            dt = 0.01,
+        ),
+        show_viewer=True,
     )
-)
 
-# Build the scene so that all entities (including the robot) are instantiated.
-scene.build()
+    ########################## Entities ##########################
+    # Add a ground plane.
+    plane = scene.add_entity(gs.morphs.Plane())
 
-########################## Joint Mapping ##########################
-# Define only the controllable (actuated) joint names.
-# (Based on your URDF, we omit fixed joints such as "base_parent_joint", "base_center_joint",
-#  "laser_joint", "L_joint_eef", "L_gripper_base_joint", "R_joint_eef", and "R_gripper_base_joint".)
-joint_names = [
-    # Base actuated joints
-    "right_wheel_joint",
-    "left_wheel_joint",
-    "pillar_platform_joint",
-    "pan_joint",
-    "tilt_joint",
-    # Left arm actuated joints
-    "L_joint1",
-    "L_joint2",
-    "L_joint3",
-    "L_joint4",
-    "L_joint5",
-    "L_joint6",
-    "L_jaw_1_joint",
-    "L_jaw_2_joint",
-    # Right arm actuated joints
-    "R_joint1",
-    "R_joint2",
-    "R_joint3",
-    "R_joint4",
-    "R_joint5",
-    "R_joint6",
-    "R_joint7",
-    "R_jaw_1_joint",
-    "R_jaw_2_joint",
-]
+    # Load the robot from the URDF file.
+    # (Make sure the file '/assets/alfred_base_descr.urdf' exists and is accessible.)
+    robot = scene.add_entity(
+        gs.morphs.URDF(
+            file  = '../assets/alfred_base_descr.urdf',
+            pos   = (0, 0, 0),
+            euler = (0, 0, 0),
+            links_to_keep = ['head_cam_rgb_camera_frame', 'chest_cam_rgb_camera_frame']
+        )
+    )
 
-# Map joint names to their local DOF indices; if a joint isn't found, print a warning.
-dofs_idx = []
-valid_joint_names = []
-for name in joint_names:
-    joint = robot.get_joint(name)
-    if joint is not None:
-        dofs_idx.append(joint.dof_idx_local)
-        valid_joint_names.append(name)
-    else:
-        print(f"Warning: Joint '{name}' not found; it is likely fixed.")
+    box = scene.add_entity(gs.morphs.Box(pos=(2, 0, 2), size=(1, 1, 1)))
 
-print("Valid joints for control:", valid_joint_names)
-num_dofs = len(valid_joint_names)
+    ########################## Robot Cameras ##########################
+    # head_cam_pos = robot.get_link('head_cam_rgb_camera_frame').get_pos()
+    # chest_cam_pos = robot.get_link('chest_cam_rgb_camera_frame').get_pos()
+    head_cam = scene.add_camera(
+        res = (1280, 800),
+        pos = (0, 0, 0),
+        lookat = (0, 0, 0),
+        fov = 60,
+        GUI = True,
+    )
+    chest_cam = scene.add_camera(
+        res = (1280, 800),
+        pos = (0, 0, 0),
+        lookat = (0, 0, 0),
+        fov = 60,
+        GUI = True,
+    )
 
-########################## Set Control Gains ##########################
-# Set control gains for the PD controller.
-# (These gain values are example placeholders; adjust as needed.)
-robot.set_dofs_kp(
-    kp             = np.full(num_dofs, 4500.0),
-    dofs_idx_local = dofs_idx,
-)
-robot.set_dofs_kv(
-    kv             = np.full(num_dofs, 450.0),
-    dofs_idx_local = dofs_idx,
-)
-robot.set_dofs_force_range(
-    lower          = np.full(num_dofs, -100.0),
-    upper          = np.full(num_dofs,  100.0),
-    dofs_idx_local = dofs_idx,
-)
+    # Build the scene.
+    scene.build()
 
-########################## PD Control with Sample Targets ##########################
-# Define sample target configurations for the actuated joints.
-# (Make sure the target array length matches the number of controllable DOFs.)
-target1 = np.linspace(0.1, 0.5, num_dofs)  # First target configuration
-target2 = np.linspace(-0.5, 0.5, num_dofs) # Second target configuration
-target3 = np.zeros(num_dofs)               # Third target configuration
 
-# The built-in PD controller will persistently drive the robot toward the target.
-# The simulation loop here runs for 1250 steps; after the loop ends, the simulation stops.
-for i in range(1250):
-    if i < 250:
-        robot.control_dofs_position(target1, dofs_idx)
-    elif i < 500:
-        robot.control_dofs_position(target2, dofs_idx)
-    elif i < 750:
-        robot.control_dofs_position(target3, dofs_idx)
-    elif i < 1000:
-        # For demonstration, hold the final position.
-        robot.control_dofs_position(target3, dofs_idx)
-    else:
-        # Optionally, zero out the control force (or you could continue holding position)
-        robot.control_dofs_force(np.zeros(num_dofs), dofs_idx)
-    
-    scene.step()
-    
-    # Print diagnostic forces every 50 steps.
-    if i % 50 == 0:
-        ctrl_force = robot.get_dofs_control_force(dofs_idx)
-        internal_force = robot.get_dofs_force(dofs_idx)
-        print(f"Step {i}: Control force: {ctrl_force}, Internal force: {internal_force}")
+    # Map the joint names to the robot's local degree-of-freedom (DOF) indices.
+    dofs_idx = []
+    valid_joint_names = []
+    for name in joint_names:
+        joint = robot.get_joint(name)
+        if joint is not None:
+            dofs_idx.append(joint.dof_idx_local)
+            valid_joint_names.append(name)
+        else:
+            print(f"Warning: Joint '{name}' not found; it may be fixed or not exported.")
 
-print("Control loop finished. Simulation has ended.")
+    print("Valid joint names for control:", valid_joint_names)
 
+    ########################## Set Control Gains ##########################
+    num_dofs = len(valid_joint_names)
+
+    # current gain values from previous Isaac Sim implementation- adjust as needed
+    kp = np.array([
+        1000,     # right_wheel_joint
+        1000,     # left_wheel_joint
+        100000,  # pillar_platform_joint
+        20,      # pan_joint
+        20,      # tilt_joint
+        250,     # L_joint1
+        250,     # L_joint2
+        100,     # L_joint3
+        100,     # L_joint4
+        75,      # L_joint5
+        75,      # L_joint6
+        100,     # L_jaw_1_joint
+        100,     # L_jaw_2_joint
+        250,     # R_joint1
+        250,     # R_joint2
+        100,     # R_joint3
+        100,     # R_joint4
+        100,      # R_joint5
+        75,     # R_joint6
+        75,     # R_joint7
+        100,     # R_jaw_1_joint
+        100,     # R_jaw_2_joint
+    ])
+
+    kv = np.array([
+        10,      # right_wheel_joint
+        10,      # left_wheel_joint
+        1000,    # pillar_platform_joint
+        1,       # pan_joint
+        1,       # tilt_joint
+        10,      # L_joint1
+        10,      # L_joint2
+        5,       # L_joint3
+        5,       # L_joint4
+        2.5,     # L_joint5
+        2.5,     # L_joint6
+        10,      # L_jaw_1_joint
+        10,      # L_jaw_2_joint
+        10,      # R_joint1
+        10,      # R_joint2
+        5,       # R_joint3
+        5,       # R_joint4
+        5,       # R_joint5
+        2.5,     # R_joint6
+        2.5,     # R_joint7
+        10,      # R_jaw_1_joint
+        10,      # R_jaw_2_joint
+    ])
+
+    force_upper = np.array([
+        1000,    # right_wheel_joint
+        1000,    # left_wheel_joint
+        100000,  # pillar_platform_joint
+        2.5,     # pan_joint
+        2.5,     # tilt_joint
+        250,     # L_joint1
+        250,     # L_joint2
+        150,     # L_joint3
+        150,     # L_joint4
+        100,     # L_joint5
+        100,     # L_joint6
+        50,      # L_jaw_1_joint
+        50,      # L_jaw_2_joint
+        250,     # R_joint1
+        250,     # R_joint2
+        150,     # R_joint3
+        150,     # R_joint4
+        150,     # R_joint5
+        100,     # R_joint6
+        100,     # R_joint7
+        50,      # R_jaw_1_joint
+        50,      # R_jaw_2_joint
+    ])
+
+    force_lower = -force_upper
+
+    robot.set_dofs_kp(
+        kp             = kp,
+        dofs_idx_local = dofs_idx,
+    )
+    robot.set_dofs_kv(
+        kv             = kv,
+        dofs_idx_local = dofs_idx,
+    )
+    robot.set_dofs_force_range(
+        lower          = force_lower,
+        upper          = force_upper,
+        dofs_idx_local = dofs_idx,
+    )
+
+    ########################## Control Loop ##########################
+    rclpy.spin_once(joint_subscriber)
+    target_positions = np.zeros(num_dofs)
+    for step in range(10000):
+        target_positions = np.array([joint_subscriber.joint_positions[name] for name in valid_joint_names])
+        # # For demonstration, leave the arm joints at current positions and lower pillar
+        # target_positions[2] = -0.0005 * step
+        robot.control_dofs_position(target_positions, dofs_idx)
+
+        # get the camera link poses
+        head_cam_pos = robot.get_link('head_cam_rgb_camera_frame').get_pos().cpu().numpy()
+        chest_cam_pos = robot.get_link('chest_cam_rgb_camera_frame').get_pos().cpu().numpy()
+        head_cam_quat = R.from_quat(robot.get_link('head_cam_rgb_camera_frame').get_quat().cpu().numpy())
+        chest_cam_quat = R.from_quat(robot.get_link('chest_cam_rgb_camera_frame').get_quat().cpu().numpy())
+        head_cam_rot_matrix = head_cam_quat.as_matrix()
+        chest_cam_rot_matrix = chest_cam_quat.as_matrix()
+
+        # get the camera lookat and up vectors to dynamically update the camera poses
+        head_x_axis = head_cam_rot_matrix[:, 0]
+        chest_x_axis = chest_cam_rot_matrix[:, 0]
+        head_lookat = head_cam_pos + head_x_axis
+        chest_lookat = chest_cam_pos - chest_x_axis
+        head_cam_up = -head_cam_rot_matrix[:, 2]
+        chest_cam_up = -chest_cam_rot_matrix[:, 2]
+
+        # update the camera poses
+        head_cam.set_pose(
+            pos=head_cam_pos,
+            lookat=head_lookat,
+            up=head_cam_up,
+        )
+        chest_cam.set_pose(
+            pos=chest_cam_pos,
+            lookat=chest_lookat,
+            up=chest_cam_up,
+        )
+
+        # render the cameras, currently only depth is used so seg and normal will be null
+        head_cam_rgb, head_cam_depth, head_cam_seg, head_cam_normal = head_cam.render(depth=True)
+        chest_cam_rgb, chest_cam_depth, chest_cam_seg, chest_cam_normal = chest_cam.render(depth=True)
+        
+        # Step the simulation.
+        scene.step()
+        rclpy.spin_once(joint_subscriber, timeout_sec=0.001)
+
+if __name__ == "__main__":
+    main()
