@@ -1,6 +1,7 @@
 import numpy as np
 import genesis as gs
-
+from scipy.spatial.transform import Rotation as R
+import time
 ########################## Initialization ##########################
 gs.init(backend=gs.gpu)
 
@@ -29,6 +30,7 @@ robot = scene.add_entity(
         file  = '../assets/alfred_base_descr.urdf',
         pos   = (0, 0, 0),
         euler = (0, 0, 0),
+        links_to_keep = ['head_cam_rgb_camera_frame', 'chest_cam_rgb_camera_frame']
     )
 )
 
