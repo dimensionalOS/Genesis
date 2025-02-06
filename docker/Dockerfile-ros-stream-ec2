@@ -124,7 +124,7 @@ RUN pip install --no-cache-dir open3d
 RUN cd / && git clone -b prod https://github.com/dimensionalOS/Genesis.git && \
     cd /Genesis && \
     pip install -e . && \
-    pip install --no-cache-dir PyOpenGL==3.1.5 \
+    pip install --no-cache-dir PyOpenGL==3.1.5 && \
     pip install flask
 
 # ------------------------ Motion planning -----------------------
