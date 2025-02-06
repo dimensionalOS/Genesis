@@ -3,15 +3,18 @@ ARG CUDA_VERSION=12.2
 # ===============================================================
 # Stage 2: Runtime Environment
 # ===============================================================
-FROM pytorch/pytorch:2.5.1-cuda${CUDA_VERSION}-cudnn9-devel
+FROM ubuntu:22.04
 
 ARG PYTHON_VERSION=3.10
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES compute,utility,graphics
 
-# Install runtime dependencies
+# Install Python and basic dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 \
+    python3-pip \
+    python3.10-dev \
     tmux \
     git \
     curl \
@@ -125,7 +128,8 @@ RUN cd / && git clone -b prod https://github.com/dimensionalOS/Genesis.git && \
     cd /Genesis && \
     pip install -e . && \
     pip install --no-cache-dir PyOpenGL==3.1.5 && \
-    pip install flask
+    pip install flask==3.1.0 && \
+    pip install torch==2.6.0
 
 # ------------------------ Motion planning -----------------------
 RUN PYTHON_MAJOR_MINOR=$(echo ${PYTHON_VERSION} | tr -d '.') && \
