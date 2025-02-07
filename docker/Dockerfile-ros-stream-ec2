@@ -1,60 +1,10 @@
-ARG CUDA_VERSION=12.1
+# FROM osrf/ros:humble-desktop-full
+FROM ros:humble-perception-jammy
 
-# ===============================================================
-# Stage 2: Runtime Environment
-# ===============================================================
-FROM pytorch/pytorch:2.5.1-cuda${CUDA_VERSION}-cudnn9-devel
-
-ARG PYTHON_VERSION=3.11
 ENV DEBIAN_FRONTEND=noninteractive
-ENV NVIDIA_VISIBLE_DEVICES all
-ENV NVIDIA_DRIVER_CAPABILITIES all
+ENV NVIDIA_DRIVER_CAPABILITIES=all
 
-# Install Python and basic dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    tmux \
-    git \
-    curl \
-    wget \
-    bash-completion \
-    libgl1 \
-    libgl1-mesa-glx \
-    libegl-dev \
-    libegl1 \
-    libxrender1 \
-    libglib2.0-0 \
-    ffmpeg \
-    libgtk2.0-dev \
-    pkg-config \
-    libvulkan-dev \
-    libgles2 \
-    libglvnd0 \
-    libglx0 \
-    locales \
-    gnupg2 \
-    lsb-release \
-    libcurl4 \
-    libxtst6 \
-    libxi6 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libvtk9-dev
-
-# Set up locales
-RUN locale-gen en_US en_US.UTF-8 && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
-ENV LANG=en_US.UTF-8
-
-# ----------------- ROS 2 Humble Installation ------------------
-RUN apt-get update && apt-get install -y software-properties-common \
-    && add-apt-repository universe \
-    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key | apt-key add - \
-    && echo "deb [arch=$(dpkg --print-architecture)] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/ros2-latest.list \
-    && apt-get update && apt-get install -y --no-install-recommends \
-    ros-humble-desktop \
-    python3-rosdep \
-    && rosdep init && rosdep update
-
+# Install required packages
 RUN apt-get update \
     && apt-get install -y \
     build-essential \
@@ -105,33 +55,65 @@ RUN apt-get update \
     python3-genmsg \
     gpg \
     pass \
+    ros-humble-depthai-ros \
     zstd \
-    && apt clean \
-    && rm -rf /var/lib/apt/lists/*
+    bash-completion \
+    libgl1 \
+    libgl1-mesa-glx \
+    libegl-dev \
+    libegl1 \
+    libxrender1 \
+    libglib2.0-0 \
+    ffmpeg \
+    libgtk2.0-dev \
+    pkg-config \
+    libvulkan-dev \
+    libgles2 \
+    libglvnd0 \
+    libglx0
 
-RUN pip3 uninstall em
+RUN apt-get upgrade -y
+
+# Set up tmux tpm
+RUN git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+
+# Install Python packages
 RUN pip3 install rospkg numpy==1.24.4 jsonpickle scipy easydict matplotlib==3.9.1 opencv-python pyyaml pyquaternion pybullet \
-    requests pillow transformers empy==3.3.4 lark
+    requests pillow open3d
+RUN pip3 install torch torchvision torchaudio transformers
+# Set CUDA_HOME environment variable
+ENV CUDA_HOME=/usr/local/cuda-12.4
+ENV PATH=$CUDA_HOME/bin:$PATH
+ENV LD_LIBRARY_PATH=$CUDA_HOME/lib64
 
-# Source ROS 2 setup
-RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
-RUN echo "source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash" >> ~/.bashrc
+EXPOSE 8765
+EXPOSE 10000
 
-WORKDIR /workspace
+RUN pip install --upgrade pip setuptools wheel packaging
+# Installing Genesis
+ARG PYTHON_VERSION=3.10
+RUN cd / && git clone https://github.com/dimensionalOS/Genesis.git
+RUN cd /Genesis && pip install . && pip install --no-cache-dir PyOpenGL==3.1.5
 
-# --------------------------- Genesis ----------------------------
-RUN pip install --no-cache-dir open3d
-RUN cd / && git clone -b prod https://github.com/dimensionalOS/Genesis.git && \
-    cd /Genesis && \
-    pip install . && \
-    pip install --no-cache-dir PyOpenGL==3.1.5 && \
-    pip install flask==3.1.0 
-
-# ------------------------ Motion planning -----------------------
+# Installing OMPL
 RUN PYTHON_MAJOR_MINOR=$(echo ${PYTHON_VERSION} | tr -d '.') && \
     wget https://github.com/ompl/ompl/releases/download/prerelease/ompl-1.6.0-cp${PYTHON_MAJOR_MINOR}-cp${PYTHON_MAJOR_MINOR}-manylinux_2_28_x86_64.whl && \
     pip install ompl-1.6.0-cp${PYTHON_MAJOR_MINOR}-cp${PYTHON_MAJOR_MINOR}-manylinux_2_28_x86_64.whl && \
     rm ompl-1.6.0-cp${PYTHON_MAJOR_MINOR}-cp${PYTHON_MAJOR_MINOR}-manylinux_2_28_x86_64.whl
 
-WORKDIR /workspace/dimensional
-CMD ["python3", "alfred_server.py"]
+# Copy the entrypoint and bashrc scripts so we have 
+# our container's environment set up correctly
+COPY entrypoint.sh /entrypoint.sh
+COPY bashrc /.bashrc
+
+RUN rm -rf /var/lib/apt/lists/*
+
+COPY 10_nvidia.json /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+COPY nvidia_icd.json /usr/share/vulkan/icd.d/nvidia_icd.json
+COPY nvidia_layers.json /etc/vulkan/implicit_layer.d/nvidia_layers.json
+
+# Set up entrypoint and default command
+ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]
+# ENTRYPOINT ["/dockerstartup/vnc_startup.sh"]
+CMD ["bash"]
+# CMD ["--wait"]
