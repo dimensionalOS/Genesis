@@ -6,11 +6,30 @@ import numpy as np
 import cv2
 from flask import Flask, Response, request, jsonify, render_template_string
 import genesis as gs
+from flask_cors import CORS, cross_origin
 
 # Optional: Uncomment this if you want to force software rendering (often needed for headless rendering)
 # os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
 
 app = Flask(__name__)
+# Enable CORS for all routes
+CORS(app, resources={
+    r"/*": {
+        "origins": [
+            "https://simulation.d1cjzkg9uefv4p.amplifyapp.com",
+            "https://dimensionalos.com",
+            "https://www.dimensionalos.com",
+            "https://sim.dimensionalos.com",
+            "http://localhost:3000",  # For local development
+            "http://localhost:5000",  # For local Flask
+            "*"  # Allow all origins for testing
+        ],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "expose_headers": ["Content-Type"],
+        "supports_credentials": True
+    }
+})
 
 # Global simulation objects and shared frame storage
 scene = None
@@ -237,8 +256,14 @@ def video_feed():
     return Response(generate_video_stream(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
-@app.route('/control', methods=['POST'])
+@app.route('/control', methods=['POST', 'OPTIONS'])
+@cross_origin()
 def control():
+    if request.method == 'OPTIONS':
+        # Preflight request. Reply successfully:
+        response = app.make_default_options_response()
+        return response
+
     global robot, dofs_idx
     data = None
     if request.is_json:

@@ -94,6 +94,7 @@ RUN pip install --upgrade pip setuptools wheel packaging
 ARG PYTHON_VERSION=3.10
 RUN cd / && git clone https://github.com/dimensionalOS/Genesis.git
 RUN cd /Genesis && pip install . && pip install --no-cache-dir PyOpenGL==3.1.5
+RUN pip install flask-cors
 
 # Installing OMPL
 RUN PYTHON_MAJOR_MINOR=$(echo ${PYTHON_VERSION} | tr -d '.') && \
