@@ -25,7 +25,7 @@ CORS(app, resources={
             "*"  # Allow all origins for testing
         ],
         "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
+        "allow_headers": ["Content-Type", "Authorization", "Access-Control-Allow-Credentials", "Origin", "Accept"],
         "expose_headers": ["Content-Type", "Access-Control-Allow-Credentials"],
         "supports_credentials": True,
         "max_age": 3600
@@ -35,7 +35,16 @@ CORS(app, resources={
 # Add CORS headers to all responses
 @app.after_request
 def after_request(response):
-    # CORS headers are handled by flask-cors CORS(app)
+    # Ensure CORS headers are present in all responses
+    if 'Access-Control-Allow-Origin' not in response.headers:
+        response.headers.add('Access-Control-Allow-Origin', '*')
+    if 'Access-Control-Allow-Headers' not in response.headers:
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    if 'Access-Control-Allow-Methods' not in response.headers:
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    # Handle OPTIONS requests
+    if request.method == 'OPTIONS':
+        response.headers.add('Access-Control-Max-Age', '3600')
     return response
 
 # Global simulation objects and shared frame storage
@@ -267,7 +276,7 @@ def video_feed():
 @cross_origin(supports_credentials=True)
 def control():
     if request.method == 'OPTIONS':
-        return jsonify({})
+        return '', 204  # Return empty response for OPTIONS
 
     global robot, dofs_idx
     data = None
@@ -278,19 +287,29 @@ def control():
         try:
             data = {"joint_positions": [float(x.strip()) for x in joint_positions_str.split(',') if x.strip() != '"']}
         except Exception:
-            return jsonify({"status": "error", "message": "Invalid input format"}), 400
+            response = jsonify({"status": "error", "message": "Invalid input format"})
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response, 400
 
     if data and "joint_positions" in data:
         try:
             target_positions = np.array(data["joint_positions"])
             if target_positions.shape[0] != len(dofs_idx):
-                return jsonify({"status": "error", "message": f"Expected {len(dofs_idx)} values, got {target_positions.shape[0]}"}), 400
+                response = jsonify({"status": "error", "message": f"Expected {len(dofs_idx)} values, got {target_positions.shape[0]}"})
+                response.headers.add('Access-Control-Allow-Origin', '*')
+                return response, 400
             robot.control_dofs_position(target_positions, dofs_idx)
-            return jsonify({"status": "ok", "message": "Command accepted"})
+            response = jsonify({"status": "ok", "message": "Command accepted"})
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response
         except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
+            response = jsonify({"status": "error", "message": str(e)})
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response, 500
     else:
-        return jsonify({"status": "error", "message": "No joint_positions provided"}), 400
+        response = jsonify({"status": "error", "message": "No joint_positions provided"})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, 400
 
 @app.route('/health')
 def health_check():
