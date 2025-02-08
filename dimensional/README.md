@@ -6,9 +6,6 @@ sudo docker build -t dimos_genesis_stream -f docker/Dockerfile-ros-stream-ec2 do
 ### Run Genesis Stream server
 ```bash
 sudo docker run --gpus all --rm -it \
--e DISPLAY=$DISPLAY \
--v /dev/dri:/dev/dri \
--v /tmp/.X11-unix/:/tmp/.X11-unix \
 -v $PWD:/workspace \
 -p 5000:5000 \
 dimos_genesis_stream
