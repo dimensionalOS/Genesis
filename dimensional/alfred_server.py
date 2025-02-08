@@ -25,11 +25,18 @@ CORS(app, resources={
             "*"  # Allow all origins for testing
         ],
         "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
-        "expose_headers": ["Content-Type"],
-        "supports_credentials": True
+        "allow_headers": ["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
+        "expose_headers": ["Content-Type", "Access-Control-Allow-Credentials"],
+        "supports_credentials": True,
+        "max_age": 3600
     }
 })
+
+# Add CORS headers to all responses
+@app.after_request
+def after_request(response):
+    # CORS headers are handled by flask-cors CORS(app)
+    return response
 
 # Global simulation objects and shared frame storage
 scene = None
@@ -257,12 +264,10 @@ def video_feed():
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/control', methods=['POST', 'OPTIONS'])
-@cross_origin()
+@cross_origin(supports_credentials=True)
 def control():
     if request.method == 'OPTIONS':
-        # Preflight request. Reply successfully:
-        response = app.make_default_options_response()
-        return response
+        return jsonify({})
 
     global robot, dofs_idx
     data = None
@@ -290,7 +295,6 @@ def control():
 @app.route('/health')
 def health_check():
     return jsonify({"status": "healthy"}), 200
-
 
 #############################################
 # Flask Server in Background Thread
