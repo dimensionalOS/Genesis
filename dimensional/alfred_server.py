@@ -287,6 +287,11 @@ def control():
     else:
         return jsonify({"status": "error", "message": "No joint_positions provided"}), 400
 
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "healthy"}), 200
+
+
 #############################################
 # Flask Server in Background Thread
 #############################################
