@@ -15,17 +15,9 @@ app = Flask(__name__)
 # Enable CORS for all routes
 CORS(app, resources={
     r"/*": {
-        "origins": [
-            "https://simulation.d1cjzkg9uefv4p.amplifyapp.com",
-            "https://dimensionalos.com",
-            "https://www.dimensionalos.com",
-            "https://sim.dimensionalos.com",
-            "http://localhost:3000",  # For local development
-            "http://localhost:5000",  # For local Flask
-            "*"  # Allow all origins for testing
-        ],
+        "origins": "*",
         "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization", "Access-Control-Allow-Credentials", "Origin", "Accept"],
+        "allow_headers": ["Content-Type", "Authorization", "Access-Control-Allow-Credentials"],
         "expose_headers": ["Content-Type", "Access-Control-Allow-Credentials"],
         "supports_credentials": True,
         "max_age": 3600
