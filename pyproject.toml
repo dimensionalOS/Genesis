@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools", "wheel", "cython>=3.0.0", "numpy==1.26.4"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -26,15 +26,16 @@ dependencies = [
     "pycollada",
     "opencv-python",
     "lxml",
-    "tetgen == 0.6.4",
+    "tetgen >= 0.6.4",
     "screeninfo",
-    "PyGEL3D",
+    "PyGEL3D", # might need to use PyGEL3D == 0.1.0 for MacOS (M1)
     "moviepy >= 2.0.0",
     "numba",
     "pymeshlab",
     "coacd",
     "OpenEXR",
     "black",
+    "scipy == 1.15.1",
 ]
 
 [tool.setuptools.packages.find]
