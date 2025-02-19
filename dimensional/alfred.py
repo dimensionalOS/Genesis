@@ -4,22 +4,28 @@ from scipy.spatial.transform import Rotation as R
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from geometry_msgs.msg import Twist
 
-class JointStateSubscriber(Node):
+class GenesisRosNode(Node):
     def __init__(self, joint_names):
-        super().__init__('joint_state_subscriber')
-        self.subscription = self.create_subscription(
+        super().__init__('genesis_ros_node')
+        self.joint_subscription = self.create_subscription(
             JointState,
             'joint_states',
             self.joint_state_callback,
             10
         )
         self.joint_positions = {name: 0.0 for name in joint_names}
+        self.alfred_tf_subscription = self.create_subscription(Twist, '/alfred_base_center_tf_twist', self.base_twist_callback, 10)
+        self.base_twist = Twist()
 
     def joint_state_callback(self, msg):
         for name, position in zip(msg.name, msg.position):
             if name in self.joint_positions:
                 self.joint_positions[name] = position
+
+    def base_twist_callback(self, msg):
+        self.base_twist = msg
 
 def main():
     ########################## Initialization ##########################
@@ -60,7 +66,7 @@ def main():
         "R_jaw_1_joint",  # prismatic (actuated)
         "R_jaw_2_joint",  # prismatic (actuated; mimic joint)
     ]
-    joint_subscriber = JointStateSubscriber(joint_names)
+    genesis_ros_node = GenesisRosNode(joint_names)
 
     # Initialize Genesis with the GPU backend.
     gs.init(backend=gs.gpu)
@@ -70,12 +76,15 @@ def main():
         viewer_options=gs.options.ViewerOptions(
             camera_pos    = (0, -5, 2),
             camera_lookat = (0, 0, 0.5),
-            camera_fov    = 30,
-            res           = (960, 640),
+            camera_fov    = 60,
+            res           = (1280, 960),
             max_FPS       = 60,
         ),
         sim_options=gs.options.SimOptions(
             dt = 0.01,
+        ),
+        rigid_options=gs.options.RigidOptions(
+            enable_self_collision = True
         ),
         show_viewer=True,
     )
@@ -97,6 +106,16 @@ def main():
 
     box = scene.add_entity(gs.morphs.Box(pos=(2, 0, 2), size=(1, 1, 1)))
 
+    office = scene.add_entity(
+        gs.morphs.Mesh(
+            file="../assets/office.glb",
+            fixed=True,  # Make it static
+            euler=(-90, 180, 0),  # Adjust orientation if needed
+            pos=(-2, 0, -13.21),  # Position offset (x, y, z)
+            convexify=False,
+            decompose_nonconvex=False,
+        )
+    )
     ########################## Robot Cameras ##########################
     # head_cam_pos = robot.get_link('head_cam_rgb_camera_frame').get_pos()
     # chest_cam_pos = robot.get_link('chest_cam_rgb_camera_frame').get_pos()
@@ -105,14 +124,14 @@ def main():
         pos = (0, 0, 0),
         lookat = (0, 0, 0),
         fov = 60,
-        GUI = True,
+        GUI = False,
     )
     chest_cam = scene.add_camera(
         res = (1280, 800),
         pos = (0, 0, 0),
         lookat = (0, 0, 0),
         fov = 60,
-        GUI = True,
+        GUI = False,
     )
 
     # Build the scene.
@@ -228,49 +247,88 @@ def main():
     )
 
     ########################## Control Loop ##########################
-    rclpy.spin_once(joint_subscriber)
+    rclpy.spin_once(genesis_ros_node)
     target_positions = np.zeros(num_dofs)
     for step in range(10000):
-        target_positions = np.array([joint_subscriber.joint_positions[name] for name in valid_joint_names])
-        # # For demonstration, leave the arm joints at current positions and lower pillar
-        # target_positions[2] = -0.0005 * step
+        if step < 100:
+            target_positions = np.array([genesis_ros_node.joint_positions[name] for name in valid_joint_names])
+            target_positions[0] = 0
+            target_positions[1] = 0
+            robot.set_dofs_position(target_positions, dofs_idx)
+            scene.step()
+            rclpy.spin_once(genesis_ros_node, timeout_sec=0.001)
+            continue
+        target_positions = np.array([genesis_ros_node.joint_positions[name] for name in valid_joint_names])
+        # set target position to 0 for wheels
+        target_positions[0] = 0
+        target_positions[1] = 0
         robot.control_dofs_position(target_positions, dofs_idx)
 
-        # get the camera link poses
+        # Get camera position
         head_cam_pos = robot.get_link('head_cam_rgb_camera_frame').get_pos().cpu().numpy()
         chest_cam_pos = robot.get_link('chest_cam_rgb_camera_frame').get_pos().cpu().numpy()
-        head_cam_quat = R.from_quat(robot.get_link('head_cam_rgb_camera_frame').get_quat().cpu().numpy())
-        chest_cam_quat = R.from_quat(robot.get_link('chest_cam_rgb_camera_frame').get_quat().cpu().numpy())
-        head_cam_rot_matrix = head_cam_quat.as_matrix()
-        chest_cam_rot_matrix = chest_cam_quat.as_matrix()
 
-        # get the camera lookat and up vectors to dynamically update the camera poses
-        head_x_axis = head_cam_rot_matrix[:, 0]
-        chest_x_axis = chest_cam_rot_matrix[:, 0]
-        head_lookat = head_cam_pos + head_x_axis
-        chest_lookat = chest_cam_pos - chest_x_axis
-        head_cam_up = -head_cam_rot_matrix[:, 2]
-        chest_cam_up = -chest_cam_rot_matrix[:, 2]
+        # Get camera rotation in quaternion form and convert to Euler angles
+        head_cam_quat = robot.get_link('head_cam_rgb_camera_frame').get_quat().cpu().numpy()
+        head_cam_euler = R.from_quat(head_cam_quat).as_euler('xyz', degrees=False)
+        chest_cam_quat = robot.get_link('chest_cam_rgb_camera_frame').get_quat().cpu().numpy()
+        chest_cam_euler = R.from_quat(chest_cam_quat).as_euler('xyz', degrees=False)
 
-        # update the camera poses
-        head_cam.set_pose(
-            pos=head_cam_pos,
-            lookat=head_lookat,
-            up=head_cam_up,
-        )
-        chest_cam.set_pose(
-            pos=chest_cam_pos,
-            lookat=chest_lookat,
-            up=chest_cam_up,
-        )
+        # Extract individual angles
+        head_yaw, head_pitch, head_roll = head_cam_euler  # Rotation around X, Y, Z
+        chest_yaw, chest_pitch, chest_roll = chest_cam_euler  # Rotation around X, Y, Z
+        chest_roll = chest_roll + np.pi     # comment this line to match real world camera orientation
+
+        # Compute LookAt direction (Forward Vector)
+        head_lookat_direction = np.array([
+            -(np.cos(head_yaw) * np.cos(head_pitch)),
+            np.sin(head_yaw) * np.cos(head_pitch),
+            np.sin(head_pitch)
+        ])
+        head_lookat = head_cam_pos + head_lookat_direction
+
+        chest_lookat_direction = np.array([
+            -(np.cos(chest_yaw) * np.cos(chest_pitch)),
+            np.sin(chest_yaw) * np.cos(chest_pitch),
+            np.sin(chest_pitch)
+        ])
+        chest_lookat = chest_cam_pos + chest_lookat_direction
+
+
+        # Compute Up direction
+        head_up_direction = np.array([
+            -np.sin(head_roll) * np.sin(head_yaw) + np.cos(head_roll) * np.sin(head_pitch) * np.cos(head_yaw),
+            np.sin(head_roll) * np.cos(head_yaw) + np.cos(head_roll) * np.sin(head_pitch) * np.sin(head_yaw),
+            np.cos(head_roll) * np.cos(head_pitch)
+        ])
+        head_cam_up = head_up_direction  # Assign Up vector
+        head_cam_up[1] = -head_cam_up[1]
+
+        chest_up_direction = np.array([
+            -np.sin(chest_roll) * np.sin(chest_yaw) + np.cos(chest_roll) * np.sin(chest_pitch) * np.cos(chest_yaw),
+            np.sin(chest_roll) * np.cos(chest_yaw) + np.cos(chest_roll) * np.sin(chest_pitch) * np.sin(chest_yaw),
+            np.cos(chest_roll) * np.cos(chest_pitch)
+        ])
+        chest_cam_up = chest_up_direction  # Assign Up vector
+        chest_cam_up[1] = -chest_cam_up[1]
+
+        # Update camera pose
+        head_cam.set_pose(pos=head_cam_pos, lookat=head_lookat, up=head_cam_up)
+        chest_cam.set_pose(pos=chest_cam_pos, lookat=chest_lookat, up=chest_cam_up)
 
         # render the cameras, currently only depth is used so seg and normal will be null
         head_cam_rgb, head_cam_depth, head_cam_seg, head_cam_normal = head_cam.render(depth=True)
         chest_cam_rgb, chest_cam_depth, chest_cam_seg, chest_cam_normal = chest_cam.render(depth=True)
+
+        # Update robot pose based on alfred_base_center_tf_twist
+        robot.set_pos([genesis_ros_node.base_twist.linear.x, genesis_ros_node.base_twist.linear.y, genesis_ros_node.base_twist.linear.z])
+        # Create quat from euler from base_twist.angular
+        quat = R.from_euler('zyx', [genesis_ros_node.base_twist.angular.x, genesis_ros_node.base_twist.angular.y, -genesis_ros_node.base_twist.angular.z + 90], degrees=True).as_quat()
+        robot.set_quat(quat)
         
         # Step the simulation.
         scene.step()
-        rclpy.spin_once(joint_subscriber, timeout_sec=0.001)
+        rclpy.spin_once(genesis_ros_node, timeout_sec=0.001)
 
 if __name__ == "__main__":
     main()

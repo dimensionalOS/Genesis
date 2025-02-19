@@ -20,8 +20,8 @@ office = scene.add_entity(
         file="../assets/office.glb",
         fixed=True,  # Make it static
         euler=(-90, 180, 0),  # Adjust orientation if needed
-        pos=(0, 0, -13),  # Position offset (x, y, z)
-        scale=1.0 
+        pos=(-2, 0, -13.21),  # Position offset (x, y, z)
+        scale=1.0,
     )
 )
 
