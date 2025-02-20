@@ -1,0 +1,211 @@
+# FROM osrf/ros:humble-desktop-full
+FROM ros:humble-perception-jammy
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ENV USER=root
+
+## Connection ports for controlling the UI:
+# VNC port:5901
+# noVNC webport, connect via http://IP:6901/?password=vncpassword
+ENV DISPLAY=:1 \
+    VNC_PORT=5901 \
+    NO_VNC_PORT=6901
+EXPOSE $VNC_PORT $NO_VNC_PORT
+
+### Envrionment config
+ENV HOME=/home/ros \
+    TERM=xterm \
+    STARTUPDIR=/dockerstartup \
+    INST_SCRIPTS=/home/ros/install \
+    NO_VNC_HOME=/home/ros/noVNC \
+    DEBIAN_FRONTEND=noninteractive \
+    VNC_COL_DEPTH=24 \
+    VNC_RESOLUTION=1920x1080 \
+    VNC_PW=vncpassword \
+    VNC_VIEW_ONLY=false
+WORKDIR $HOME
+
+### Add all install scripts for further steps
+ADD ./src/common/install/ $INST_SCRIPTS/
+ADD ./src/debian/install/ $INST_SCRIPTS/
+
+### Install some common tools
+RUN $INST_SCRIPTS/tools.sh
+ENV LANG='en_US.UTF-8' LANGUAGE='en_US:en' LC_ALL='en_US.UTF-8'
+
+### Install custom fonts
+RUN $INST_SCRIPTS/install_custom_fonts.sh
+
+### Install xvnc-server & noVNC - HTML5 based VNC viewer
+RUN $INST_SCRIPTS/tigervnc.sh
+RUN $INST_SCRIPTS/no_vnc.sh
+
+### Install firefox and chrome browser
+RUN $INST_SCRIPTS/firefox.sh
+# RUN $INST_SCRIPTS/chrome.sh
+
+### Install xfce UI
+RUN $INST_SCRIPTS/xfce_ui.sh
+ADD ./src/common/xfce/ $HOME/
+
+### configure startup
+RUN $INST_SCRIPTS/libnss_wrapper.sh
+ADD ./src/common/scripts $STARTUPDIR
+RUN $INST_SCRIPTS/set_user_permission.sh $STARTUPDIR $HOME
+
+# Install required packages
+RUN apt-get update \
+    && apt-get install -y \
+    build-essential \
+    cmake \
+    python3-colcon-common-extensions \
+    python3-flake8 \
+    python3-rosdep \
+    python3-setuptools \
+    python3-vcstool \
+    python3-rosinstall \
+    python3-rosinstall-generator \
+    python3-wstool \
+    nano \
+    wget \
+    curl \
+    vim \
+    git \
+    x11-apps \
+    tmux \
+    ros-humble-foxglove-bridge \
+    ros-humble-moveit \
+    ros-humble-moveit-visual-tools \
+    ros-humble-moveit-ros-visualization \
+    ros-humble-moveit-servo \
+    ros-humble-joint-state-publisher-gui \
+    ros-humble-rosbridge-suite \
+    ros-humble-xacro \
+    ros-humble-robot-state-publisher \
+    ros-humble-teleop-twist-keyboard \
+    ros-humble-teleop-twist-joy \
+    ros-humble-joy \
+    ros-humble-controller-manager \
+    ros-humble-ros2-control \
+    ros-humble-ros2-controllers \
+    ros-humble-robot-state-publisher \
+    ros-humble-joint-state-publisher \
+    ros-humble-joint-trajectory-controller \
+    ros-humble-joint-state-broadcaster \
+    ros-humble-vision-msgs \
+    ros-humble-ackermann-msgs \
+    iputils-ping \
+    net-tools \
+    htop \
+    python3-pip \
+    ros-humble-tf* \
+    ros-humble-gazebo-ros-pkgs \
+    dos2unix \
+    python3-genmsg \
+    gpg \
+    pass \
+    ros-humble-depthai-ros \
+    zstd
+
+# Install moveit2 from source
+# Make sure we have the latest versions of things
+# RUN apt-get upgrade -y \
+#     && rosdep update
+
+# RUN /bin/bash -c "source /opt/ros/humble/setup.bash && mkdir -p /home/ros/ws_moveit2/src && cd /home/ros/ws_moveit2/src && git clone https://github.com/moveit/moveit2.git -b main"
+# # RUN /bin/bash -c "for repo in moveit2/moveit2.repos $(f="moveit2/moveit2_humble.repos"; test -r $f && echo $f); do vcs import < "$repo"; done"
+# RUN /bin/bash -c 'cd /home/ros/ws_moveit2/src && for repo in moveit2/moveit2.repos $(f="moveit2/moveit2_$ROS_DISTRO.repos"; test -r $f && echo $f); do vcs import < "$repo"; done'
+
+# RUN cd /home/ros/ws_moveit2/src && rosdep install -r --from-paths . --ignore-src --rosdistro $ROS_DISTRO -y
+
+# RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/ros/ws_moveit2 && colcon build --event-handlers desktop_notification- status- --cmake-args -DCMAKE_BUILD_TYPE=Release"
+
+# Does the same thing as above to install moveit py but not by building from source
+# From https://www.reddit.com/r/ROS/comments/18glf0v/moveit2_python_api_interface/
+# RUN /bin/bash -c 'echo "deb [trusted=yes] https://raw.githubusercontent.com/moveit/moveit2_packages/jammy-humble/ ./" | sudo tee /etc/apt/sources.list.d/moveit_moveit2_packages.list'
+# RUN /bin/bash -c 'echo "yaml https://raw.githubusercontent.com/moveit/moveit2_packages/jammy-humble/local.yaml humble" | sudo tee /etc/ros/rosdep/sources.list.d/1-moveit_moveit2_packages.list'
+# RUN apt-get update
+# RUN apt-get install -y ros-humble-moveit-py
+RUN apt-get upgrade -y
+
+# Set up tmux tpm
+RUN git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+
+# set up git credential manager
+RUN wget https://github.com/git-ecosystem/git-credential-manager/releases/download/v2.5.1/gcm-linux_amd64.2.5.1.deb
+RUN dpkg -i gcm-linux_amd64.2.5.1.deb
+RUN rm gcm-linux_amd64.2.5.1.deb
+RUN git config --global credential.credentialStore plaintext
+
+# Install Python packages
+RUN pip3 install rospkg numpy==1.24.4 jsonpickle scipy easydict matplotlib==3.9.1 opencv-python pyyaml pyquaternion pybullet \
+    requests pillow open3d
+RUN pip3 install torch torchvision torchaudio transformers
+
+# Install CUDA (example for CUDA 11.6)
+# RUN apt-get update && apt-get install -y \
+#     cuda-toolkit-12-1 \
+# RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.0-1_all.deb
+# RUN dpkg -i cuda-keyring_1.0-1_all.deb
+# RUN apt-get update && apt-get install -y \
+#     cuda \
+
+# RUN apt-get update && apt-get -y install cuda-toolkit nvidia-gds \
+
+# Set CUDA_HOME environment variable
+ENV CUDA_HOME=/usr/local/cuda-12.4
+ENV PATH=$CUDA_HOME/bin:$PATH
+ENV LD_LIBRARY_PATH=$CUDA_HOME/lib64
+
+ARG USERNAME=ros
+ARG USER_UID=1000
+ARG USER_GID=$USER_UID
+
+RUN groupadd --gid $USER_GID $USERNAME \
+    && useradd -s /bin/bash --uid $USER_UID --gid $USER_GID -m $USERNAME \
+    && chown $USER_UID:$USER_GID /home/$USERNAME/.config
+
+EXPOSE 8765
+EXPOSE 10000
+# Set up sudo
+RUN apt-get install -y sudo \
+    && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME\
+    && chmod 0440 /etc/sudoers.d/$USERNAME
+
+# RUN wget https://stereolabs.sfo2.cdn.digitaloceanspaces.com/zedsdk/4.2/ZED_SDK_Ubuntu22_cuda12.1_v4.2.1.zstd.run && chmod +x ZED_SDK_Ubuntu22_cuda12.1_v4.2.1.zstd.run
+# RUN /bin/bash -c "./ZED_SDK_Ubuntu22_cuda12.1_v4.2.1.zstd.run -- silent skip_cuda"
+
+# RUN wget https://download.stereolabs.com/zedsdk/4.2/cu12/ubuntu22
+RUN cd /home/$USERNAME && git clone https://github.com/isaac-sim/IsaacSim-ros_workspaces.git
+RUN rosdep update
+RUN /bin/bash -c "cd /home/$USERNAME/IsaacSim-ros_workspaces/humble_ws && rosdep install -i --from-path src --rosdistro humble -y"
+
+RUN mkdir -p /home/$USERNAME/dev_ws/src
+RUN cd /home/$USERNAME/dev_ws/src && git clone https://github.com/yashas-salankimatt/thesis_ros_ws.git
+
+RUN mkdir -p /home/$USERNAME/deps
+RUN cd /home/$USERNAME/deps && git clone https://github.com/facebookresearch/segment-anything-2.git
+RUN cd /home/$USERNAME/deps/segment-anything-2 && pip install -e .
+RUN cd /home/$USERNAME/deps/segment-anything-2/checkpoints && wget https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_tiny.pt || { echo "Failed to download checkpoint for SAM 2 tiny"; exit 1; }
+RUN cd /home/$USERNAME/dev_ws
+RUN chown -R $USER_UID:$USER_GID /home/$USERNAME/
+
+# Copy the entrypoint and bashrc scripts so we have 
+# our container's environment set up correctly
+COPY entrypoint.sh /entrypoint.sh
+COPY bashrc /home/${USERNAME}/.bashrc
+COPY .tmux.conf /home/${USERNAME}/.tmux.conf
+
+# RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/$USERNAME/dev_ws && colcon build"
+RUN /bin/bash -c "source /opt/ros/humble/setup.bash && cd /home/$USERNAME/IsaacSim-ros_workspaces/humble_ws && colcon build"
+
+RUN rm -rf /var/lib/apt/lists/*
+
+USER 1000
+
+# Set up entrypoint and default command
+ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]
+# ENTRYPOINT ["/dockerstartup/vnc_startup.sh"]
+# CMD ["bash"]
+CMD ["--wait"]

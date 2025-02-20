@@ -106,16 +106,16 @@ def main():
 
     box = scene.add_entity(gs.morphs.Box(pos=(2, 0, 2), size=(1, 1, 1)))
 
-    office = scene.add_entity(
-        gs.morphs.Mesh(
-            file="../assets/office.glb",
-            fixed=True,  # Make it static
-            euler=(-90, 180, 0),  # Adjust orientation if needed
-            pos=(-2, 0, -13.21),  # Position offset (x, y, z)
-            convexify=False,
-            decompose_nonconvex=False,
-        )
-    )
+    # office = scene.add_entity(
+    #     gs.morphs.Mesh(
+    #         file="../assets/office.glb",
+    #         fixed=True,  # Make it static
+    #         euler=(-90, 180, 0),  # Adjust orientation if needed
+    #         pos=(-2, 0, -13.21),  # Position offset (x, y, z)
+    #         convexify=False,
+    #         decompose_nonconvex=False,
+    #     )
+    # )
     ########################## Robot Cameras ##########################
     # head_cam_pos = robot.get_link('head_cam_rgb_camera_frame').get_pos()
     # chest_cam_pos = robot.get_link('chest_cam_rgb_camera_frame').get_pos()

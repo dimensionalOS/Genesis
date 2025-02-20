@@ -1,0 +1,8 @@
+set -o vi
+
+source /opt/ros/humble/setup.bash
+source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash
+# source /home/ros/dev_ws/install/setup.bash
+source /home/ros/IsaacSim-ros_workspaces/humble_ws/install/setup.bash
+# source /home/ros/ws_moveit2/install/setup.bash
+export FASTRTPS_DEFAULT_PROFILES_FILE=/home/ros/IsaacSim-ros_workspaces/humble_ws/fastdds.xml
