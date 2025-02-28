@@ -123,14 +123,18 @@ def main():
         res = (1280, 800),
         pos = (0, 0, 0),
         lookat = (0, 0, 0),
-        fov = 60,
+        fov = 55,
+        near = 0.3,
+        far = 10,
         GUI = False,
     )
     chest_cam = scene.add_camera(
         res = (1280, 800),
         pos = (0, 0, 0),
         lookat = (0, 0, 0),
-        fov = 60,
+        fov = 55,
+        near = 0.3,
+        far = 10,
         GUI = False,
     )
 
