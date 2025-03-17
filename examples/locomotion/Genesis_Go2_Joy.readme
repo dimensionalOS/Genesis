@@ -1,0 +1,10 @@
+This script is work in progress.
+
+Prepare the environemtn per Geneisis install and Training setup.
+https://genesis-world.readthedocs.io/en/latest/user_guide/getting_started/locomotion.html
+
+unzip in the "Genesis/Genesis/examples/locomotion" folder
+
+pip install pygame
+
+python go2_et.py eval -e etmove --ckpt 2500
