@@ -1,19 +1,22 @@
 import hashlib
+import math
 import os
 import pickle as pkl
 from io import BytesIO
 from urllib import request
 
+import numpy as np
+import trimesh
+from PIL import Image
+
 import coacd
 import igl
-import numpy as np
 import pygltflib
 import pyvista as pv
 import tetgen
-from PIL import Image
 
 import genesis as gs
-from genesis.ext import trimesh
+from genesis.ext import fast_simplification
 
 from . import geom as gu
 from .misc import (
@@ -170,17 +173,25 @@ def surface_uvs_to_trimesh_visual(surface, uvs=None, n_verts=None):
     return visual
 
 
-def convex_decompose(mesh, morph):
-    if morph.decimate:
-        if mesh.vertices.shape[0] > 3:
-            mesh = mesh.simplify_quadric_decimation(morph.decimate_face_num)
+def convex_decompose(mesh, coacd_options):
+    # compute file name via hashing for caching
+    cvx_path = get_cvx_path(mesh.vertices, mesh.faces, coacd_options)
 
-    cvx_path = get_cvx_path(mesh.vertices, mesh.faces, morph.coacd_options)
+    # loading pre-computed cache if available
+    is_cached_loaded = False
+    if os.path.exists(cvx_path):
+        gs.logger.debug("Convex decomposition file (.cvx) found in cache.")
+        try:
+            with open(cvx_path, "rb") as file:
+                mesh_parts = pkl.load(file)
+            is_cached_loaded = True
+        except (EOFError, ModuleNotFoundError, pkl.UnpicklingError):
+            gs.logger.info("Ignoring corrupted cache.")
 
-    if not os.path.exists(cvx_path):
+    if not is_cached_loaded:
         with gs.logger.timer("Running convex decomposition."):
             mesh = coacd.Mesh(mesh.vertices, mesh.faces)
-            args = morph.coacd_options
+            args = coacd_options
             result = coacd.run_coacd(
                 mesh,
                 threshold=args.threshold,
@@ -203,91 +214,148 @@ def convex_decompose(mesh, morph):
             mesh_parts = []
             for vs, fs in result:
                 mesh_parts.append(trimesh.Trimesh(vs, fs))
+
             os.makedirs(os.path.dirname(cvx_path), exist_ok=True)
             with open(cvx_path, "wb") as file:
                 pkl.dump(mesh_parts, file)
 
-    else:
-        with open(cvx_path, "rb") as file:
-            mesh_parts = pkl.load(file)
-
     return mesh_parts
 
 
-def parse_visual_and_col_mesh(morph, surface):
-    """
-    Returns a list of meshes, each will be stored in as a `RigidGeom`.
-    We parse all the submeshes in the obj file.
-    If group_by_material=True, we group them based on their associated materials. This will dramatically speed up parsing, since we only need to load texture images on a group basis.
-    """
-    vms = gs.Mesh.from_morph_surface(morph, surface)
+def postprocess_collision_geoms(
+    g_infos, decimate, decimate_face_num, convexify, decompose_error_threshold, coacd_options
+):
+    # Early return if there is no geometry to process
+    if not g_infos:
+        return []
 
-    # compute collision mesh
-    ms = list()
+    # Check if all the geometries can be convexify without decomposition
+    must_decompose = False
+    if convexify:
+        for g_info in g_infos:
+            mesh = g_info["mesh"]
+            tmesh = mesh.trimesh
+            if g_info["type"] != gs.GEOM_TYPE.MESH:
+                continue
+            cmesh = trimesh.convex.convex_hull(tmesh)
+            if cmesh.volume < gs.EPS:
+                continue
+            if not tmesh.is_winding_consistent:
+                volume_err = float("inf")
+                must_decompose = True
+            elif tmesh.volume > gs.EPS:
+                volume_err = cmesh.volume / tmesh.volume - 1.0
+                if volume_err > decompose_error_threshold:
+                    must_decompose = True
 
-    if not morph.collision:
-        return vms, ms
+    # Check whether merging the geometries is possible, i.e.
+    # * They are all meshes
+    # * They belong to the same collision group (same contype and conaffinity)
+    # * Their physical properties are the same (friction coef and contact solver parameters)
+    is_merged = False
+    if must_decompose and len(g_infos) > 1:
+        is_merged = all(g_info["type"] == gs.GEOM_TYPE.MESH for g_info in g_infos)
+        for name in ("contype", "conaffinity", "friction", "sol_params"):
+            if not is_merged:
+                break
+            values = np.stack([g_info.get(name, float("nan")) for g_info in g_infos], axis=0)
+            diffs = np.diff(values, axis=0)
+            if not (np.isnan(diffs).all(axis=0) | (np.abs(diffs) < gs.EPS).all(axis=0)).all():
+                is_merged = False
 
-    if morph.merge_submeshes_for_collision:
-        tmeshes = []
-        for vm in vms:
-            tmeshes.append(vm.trimesh)
-        tmesh = trimesh.util.concatenate(tmeshes)
+        # Must apply geometry transform before merge concatenation
+        if is_merged:
+            tmeshes = []
+            for g_info in g_infos:
+                mesh = g_info["mesh"]
+                tmesh = mesh.trimesh.copy()
+                pos = g_info.get("pos", gu.zero_pos())
+                quat = g_info.get("quat", gu.identity_quat())
+                tmesh.apply_transform(gs.utils.geom.trans_quat_to_T(pos, quat))
+                tmeshes.append(tmesh)
+            tmesh = trimesh.util.concatenate(tmeshes)
+            mesh = gs.Mesh.from_trimesh(mesh=tmesh, surface=gs.surfaces.Collision(), metadata={"merged": True})
+            g_infos = [{**g_infos[0], **dict(mesh=mesh, pos=gu.zero_pos(), quat=gu.identity_quat())}]
 
-        if morph.convexify or tmesh.is_convex or not morph.decompose_nonconvex:
-            ms.append(
-                gs.Mesh.from_trimesh(
-                    mesh=tmesh,
-                    convexify=morph.convexify,
-                    decimate=morph.decimate,
-                    decimate_face_num=morph.decimate_face_num,
-                    surface=gs.surfaces.Collision(),
-                )
+    # Try again to convexify then apply convex decomposition if not possible
+    if is_merged:
+        (g_info,) = g_infos
+        mesh = g_info["mesh"]
+        tmesh = mesh.trimesh
+        cmesh = trimesh.convex.convex_hull(tmesh)
+        if tmesh.is_winding_consistent:
+            volume_err = cmesh.volume / tmesh.volume - 1.0
+            must_decompose = volume_err > decompose_error_threshold
+
+    if must_decompose:
+        if math.isinf(volume_err):
+            gs.logger.info(
+                f"Collision mesh has inconsistent winding and 'decompose_error_threshold' != float('inf'). "
+                "Falling back to more expensive convex decomposition (see FileMorph options)."
             )
         else:
-            tmeshes = convex_decompose(tmesh, morph)
-            for tmesh in tmeshes:
-                ms.append(
-                    gs.Mesh.from_trimesh(
-                        mesh=tmesh,
-                        convexify=True,  # just to make sure
-                        decimate=morph.decimate,
-                        surface=gs.surfaces.Collision(),
-                    )
-                )
-
-    else:
-        for vm in vms:
-            if morph.convexify or vm.trimesh.is_convex or not morph.decompose_nonconvex:
-                ms.append(
-                    gs.Mesh.from_trimesh(
-                        mesh=vm.trimesh,
-                        convexify=morph.convexify,
-                        decimate=morph.decimate,
-                        decimate_face_num=morph.decimate_face_num,
-                        surface=gs.surfaces.Collision(),
-                    )
-                )
+            gs.logger.info(
+                f"Convex hull is not accurate enough for collision detection ({volume_err:.3f}). Falling back to more "
+                "expensive convex decomposition (see FileMorph options)."
+            )
+        _g_infos = []
+        for g_info in g_infos:
+            mesh = g_info["mesh"]
+            tmesh = mesh.trimesh
+            if g_info["type"] != gs.GEOM_TYPE.MESH:
+                volume_err = 0.0
+            if not tmesh.is_winding_consistent:
+                volume_err = float("inf")
+            elif tmesh.volume < gs.EPS:
+                volume_err = 0.0
             else:
-                tmeshes = convex_decompose(vm.trimesh, morph)
-                for tmesh in tmeshes:
-                    ms.append(
-                        gs.Mesh.from_trimesh(
-                            mesh=tmesh,
-                            convexify=True,  # just to make sure
-                            decimate=morph.decimate,
-                            decimate_face_num=morph.decimate_face_num,
-                            surface=gs.surfaces.Collision(),
-                        )
+                cmesh = trimesh.convex.convex_hull(tmesh)
+                volume_err = cmesh.volume / tmesh.volume - 1.0
+            if volume_err > decompose_error_threshold:  # Note that 'inf' is not larger than 'inf'
+                tmeshes = convex_decompose(tmesh, coacd_options)
+                meshes = [
+                    gs.Mesh.from_trimesh(
+                        tmesh, surface=gs.surfaces.Collision(), metadata={**mesh.metadata, "decomposed": True}
                     )
+                    for tmesh in tmeshes
+                ]
+                _g_infos += [{**g_info, **dict(mesh=mesh)} for mesh in meshes]
+            else:
+                _g_infos.append(g_info)
+        g_infos = _g_infos
 
-    return vms, ms
+    # Process of meshes sequentially
+    _g_infos = []
+    for g_info in g_infos:
+        mesh = g_info["mesh"]
+        tmesh = mesh.trimesh
+        num_vertices = len(tmesh.vertices)
+        if not decimate and num_vertices > 5000:
+            gs.logger.warning(
+                f"At least one of the meshes contain many vertices ({num_vertices}). Consider setting "
+                "'morph.decimate=True' to speed up collision detection and improve numerical stability."
+            )
+        if decimate and decimate_face_num < 100:
+            gs.logger.warning(
+                "`decimate_face_num` should be greater than 100 to ensure sufficient geometry details are preserved."
+            )
+        mesh = gs.Mesh.from_trimesh(
+            mesh=tmesh,
+            convexify=convexify,
+            decimate=decimate,
+            decimate_face_num=decimate_face_num,
+            surface=gs.surfaces.Collision(),
+            metadata=mesh.metadata.copy(),
+        )
+        _g_infos.append({**g_info, **dict(mesh=mesh)})
+
+    return _g_infos
 
 
 def parse_mesh_trimesh(path, group_by_material, scale, surface):
     meshes = []
     for _, mesh in trimesh.load(path, force="scene", group_material=group_by_material, process=False).geometry.items():
-        meshes.append(gs.Mesh.from_trimesh(mesh=mesh, scale=scale, surface=surface))
+        meshes.append(gs.Mesh.from_trimesh(mesh=mesh, scale=scale, surface=surface, metadata={"mesh_path": path}))
     return meshes
 
 
@@ -386,9 +454,18 @@ def parse_mesh_glb(path, group_by_material, scale, surface):
 
         return array.reshape([count] + type_to_count[data_type][1])
 
+    def get_image(image_index, image_type=None):
+        if image_index is not None:
+            image = Image.open(uri_to_PIL(glb.images[image_index].uri))
+            if image_type is not None:
+                image = image.convert(image_type)
+            return np.array(image)
+        return None
+
     glb.convert_images(pygltflib.ImageFormat.DATAURI)
 
-    scene = glb.scenes[glb.scene]
+    glb_scene = 0 if glb.scene is None else glb.scene
+    scene = glb.scenes[glb_scene]
     mesh_list = list()
     for node_index in scene.nodes:
         root_mesh_list = parse_tree(node_index)
@@ -511,18 +588,20 @@ def parse_mesh_glb(path, group_by_material, scale, surface):
             # parse normal map
             if material.normalTexture is not None:
                 texture = glb.textures[material.normalTexture.index]
-                uvs_used = material.normalTexture.texCoord
-                image_index = texture.source
-                image = Image.open(uri_to_PIL(glb.images[image_index].uri))
-                normal_texture = create_texture(np.array(image), None, "linear")
+                if material.normalTexture.texCoord is not None:
+                    uvs_used = material.normalTexture.texCoord
+                normal_image = get_image(texture.source)
+                if normal_image is not None:
+                    normal_texture = create_texture(normal_image, None, "linear")
 
             # TODO: Parse occlusion
             if material.occlusionTexture is not None:
-                texture = glb.textures[material.normalTexture.index]
-                uvs_used = material.normalTexture.texCoord
-                image_index = texture.source
-                image = Image.open(uri_to_PIL(glb.images[image_index].uri))
-                occlusion_texture = create_texture(np.array(image), None, "linear")
+                texture = glb.textures[material.occlusionTexture.index]
+                if material.occlusionTexture.texCoord is not None:
+                    uvs_used = material.occlusionTexture.texCoord
+                occlusion_image = get_image(texture.source)
+                if occlusion_image is not None:
+                    occlusion_texture = create_texture(occlusion_image, None, "linear")
 
             # parse alpha mode
             if material.alphaMode == "OPAQUE":
@@ -541,16 +620,17 @@ def parse_mesh_glb(path, group_by_material, scale, surface):
                 metallic_image = None
                 if pbr_texture.metallicRoughnessTexture is not None:
                     texture = glb.textures[pbr_texture.metallicRoughnessTexture.index]
-                    uvs_used = pbr_texture.metallicRoughnessTexture.texCoord
-                    image_index = texture.source
-                    image = Image.open(uri_to_PIL(glb.images[image_index].uri))
-                    bands = image.split()
-                    if len(bands) == 1:
-                        roughness_image = np.array(bands[0])
-                    else:
-                        roughness_image = np.array(bands[1])  # G for roughness
-                        metallic_image = np.array(bands[2])  # B for metallic
-                        # metallic_image = np.array(bands[0])     # R for metallic????
+                    if pbr_texture.metallicRoughnessTexture.texCoord is not None:
+                        uvs_used = pbr_texture.metallicRoughnessTexture.texCoord
+
+                    combined_image = get_image(texture.source)
+                    if combined_image is not None:
+                        if combined_image.ndim == 2:
+                            roughness_image = combined_image
+                        else:
+                            roughness_image = combined_image[:, :, 1]  # G for roughness
+                            metallic_image = combined_image[:, :, 2]  # B for metallic
+                            # metallic_image = np.array(bands[0])     # R for metallic????
 
                 metallic_factor = None
                 if pbr_texture.metallicFactor is not None:
@@ -567,10 +647,16 @@ def parse_mesh_glb(path, group_by_material, scale, surface):
                 color_image = None
                 if pbr_texture.baseColorTexture is not None:
                     texture = glb.textures[pbr_texture.baseColorTexture.index]
-                    uvs_used = pbr_texture.baseColorTexture.texCoord
-                    image_index = texture.source
-                    image = Image.open(uri_to_PIL(glb.images[image_index].uri))
-                    color_image = np.array(image.convert("RGBA"))
+                    if pbr_texture.baseColorTexture.texCoord is not None:
+                        uvs_used = pbr_texture.baseColorTexture.texCoord
+                    source = texture.source
+                    if "KHR_texture_basisu" in texture.extensions:
+                        # source = texture.extensions["KHR_texture_basisu"]["source"]
+                        gs.logger.warning(
+                            f"Mesh file `{path}` uses 'KHR_texture_basisu' extension for supercompression of texture "
+                            "images, which is unsupported. Ignoring texture."
+                        )
+                    color_image = get_image(source, "RGBA")
 
                 # parse color
                 color_factor = None
@@ -584,51 +670,36 @@ def parse_mesh_glb(path, group_by_material, scale, surface):
                 color_image = None
                 if "diffuseTexture" in extension_material:
                     texture = extension_material["diffuseTexture"]
-                    uvs_used = texture["texCoord"]
-                    image = Image.open(uri_to_PIL(glb.images[texture["index"]].uri))
-                    color_image = np.array(image.convert("RGBA"))
+                    if texture.get("texCoord", None) is not None:
+                        uvs_used = texture["texCoord"]
+                    color_image = get_image(texture.get("index"), "RGBA")
 
                 color_factor = None
                 if "diffuseFactor" in extension_material:
                     color_factor = np.array(extension_material["diffuseFactor"], dtype=float)
 
                 color_texture = create_texture(color_image, color_factor, "srgb")
+                material.extensions.pop("KHR_materials_pbrSpecularGlossiness")
 
             if color_texture is not None:
                 opacity_texture = color_texture.check_dim(3)
                 if opacity_texture is not None:
                     opacity_texture.apply_cutoff(alpha_cutoff)
 
-            # TODO: Parse them!
-            if "KHR_materials_specular" in material.extensions:
-                extension_material = material.extensions["KHR_materials_specular"]
-                if "specularColorFactor" in extension_material:
-                    specular_color = np.array(extension_material["specularColorFactor"], dtype=float)
-
-            if "KHR_materials_transmission" in material.extensions:
-                extension_material = material.extensions["KHR_materials_transmission"]
-                specular_transmission = extension_material["transmissionFactor"]  # e.g. 1
-
-            if "KHR_materials_ior" in material.extensions:
-                extension_material = material.extensions["KHR_materials_ior"]
-                ior = extension_material["ior"]  # e.g. 1.4500000476837158
-
             if "KHR_materials_unlit" in material.extensions:
                 # No unlit material implemented in renderers. Use emissive texture.
                 if color_texture is not None:
                     emissive_texture = color_texture
                     color_texture = None
+                material.extensions.pop("KHR_materials_unlit")
             else:
                 # parse emissive
                 emissive_image = None
                 if material.emissiveTexture is not None:
                     texture = glb.textures[material.emissiveTexture.index]
-                    uvs_used = material.emissiveTexture.texCoord
-                    image_index = texture.source
-                    image = Image.open(uri_to_PIL(glb.images[image_index].uri))
-                    if image.mode != "RGB":
-                        image = image.convert("RGB")
-                    emissive_image = np.array(image)
+                    if material.emissiveTexture.texCoord is not None:
+                        uvs_used = material.emissiveTexture.texCoord
+                    emissive_image = get_image(texture.source, "RGB")
 
                 emissive_factor = None
                 if material.emissiveFactor is not None:
@@ -636,6 +707,27 @@ def parse_mesh_glb(path, group_by_material, scale, surface):
 
                 if emissive_factor is not None and np.any(emissive_factor > 0.0):
                     emissive_texture = create_texture(emissive_image, emissive_factor, "srgb")
+
+            # TODO: Parse them!
+            for extension_name, extension_material in material.extensions.items():
+                if extension_name == "KHR_materials_specular":
+                    specular_weight = extension_material.get("specularFactor", 1.0)
+                    specular_color = np.array(
+                        extension_material.get("specularColorFactor", [1.0, 1.0, 1.0]), dtype=float
+                    )
+
+                elif extension_name == "KHR_materials_clearcoat":
+                    clearcoat_weight = extension_material.get("clearcoatFactor", 0.0)
+                    clearcoat_roughness_factor = (extension_material["clearcoatRoughnessFactor"],)
+
+                elif extension_name == "KHR_materials_volume":
+                    attenuation_distance = extension_material["attenuationDistance"]
+
+                elif extension_name == "KHR_materials_transmission":
+                    specular_trans_factor = extension_material.get("transmissionFactor", 0.0)  # e.g. 1
+
+                elif extension_name == "KHR_materials_ior":
+                    ior = extension_material["ior"]  # e.g. 1.4500000476837158
 
         # repair uv
         group_uvs = temp_infos[group_idx]["uvs1"] if uvs_used == 1 else temp_infos[group_idx]["uvs0"]
@@ -673,16 +765,16 @@ def parse_mesh_glb(path, group_by_material, scale, surface):
             double_sided=double_sided,
         )
 
-        meshes.append(
-            gs.Mesh.from_attrs(
-                verts=verts,
-                faces=faces,
-                normals=normals,
-                surface=group_surface,
-                uvs=uvs,
-                scale=scale,
-            )
+        mesh = gs.Mesh.from_attrs(
+            verts=verts,
+            faces=faces,
+            normals=normals,
+            surface=group_surface,
+            uvs=uvs,
+            scale=scale,
         )
+        mesh.metadata["mesh_path"] = path
+        meshes.append(mesh)
 
     return meshes
 
@@ -1011,7 +1103,7 @@ def create_cylinder(radius, height, sections=None, color=(1.0, 1.0, 1.0, 1.0)):
     return mesh
 
 
-def create_plane(size=1000, color=None, normal=(0, 0, 1)):
+def create_plane(size=1e3, color=None, normal=(0, 0, 1)):
     thickness = 1e-2  # for safety
     mesh = trimesh.creation.box(extents=[size, size, thickness])
     mesh.vertices[:, 2] -= thickness / 2

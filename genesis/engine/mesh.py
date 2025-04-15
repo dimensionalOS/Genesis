@@ -1,16 +1,17 @@
-import contextlib
 import os
 import pickle as pkl
-from io import StringIO
+from contextlib import redirect_stdout
 
 import numpy as np
 import pyvista as pv
 import tetgen
+import trimesh
+import pymeshlab
 
 import genesis as gs
 import genesis.utils.mesh as mu
 import genesis.utils.particle as pu
-from genesis.ext import trimesh
+from genesis.ext import fast_simplification
 from genesis.repr_base import RBC
 
 
@@ -77,12 +78,19 @@ class Mesh(RBC):
             self._mesh = trimesh.convex.convex_hull(self._mesh)
         self.clear_visuals()
 
-    def decimate(self, target_face_num, convexify):
+    def decimate(self, decimate_face_num, convexify):
         """
         Decimate the mesh.
         """
-        if self._mesh.vertices.shape[0] > 3 and self._mesh.faces.shape[0] > target_face_num:
-            self._mesh = self._mesh.simplify_quadric_decimation(target_face_num)
+        if self._mesh.vertices.shape[0] > 3 and self._mesh.faces.shape[0] > decimate_face_num:
+            self._mesh = trimesh.Trimesh(
+                *fast_simplification.simplify(
+                    self._mesh.vertices,
+                    self._mesh.faces,
+                    target_count=decimate_face_num,
+                    agg=2,
+                )
+            )
 
             # need to run convexify again after decimation, because sometimes decimating a convex-mesh can make it non-convex...
             if convexify:
@@ -96,10 +104,18 @@ class Mesh(RBC):
         """
         rm_file_path = mu.get_remesh_path(self.verts, self.faces, edge_len_abs, edge_len_ratio, fix)
 
-        if not os.path.exists(rm_file_path):
+        is_cached_loaded = False
+        if os.path.exists(rm_file_path):
+            gs.logger.debug("Remeshed file (`.rm`) found in cache.")
+            try:
+                with open(rm_file_path, "rb") as file:
+                    verts, faces = pkl.load(file)
+                is_cached_loaded = True
+            except (EOFError, ModuleNotFoundError, pkl.UnpicklingError):
+                gs.logger.info("Ignoring corrupted cache.")
+
+        if not is_cached_loaded:
             gs.logger.info("Remeshing for tetrahedralization...")
-            with contextlib.redirect_stdout(StringIO()):
-                import pymeshlab
             ms = pymeshlab.MeshSet()
             ms.add_mesh(pymeshlab.Mesh(vertex_matrix=self.verts, face_matrix=self.faces))
             if edge_len_abs is not None:
@@ -112,10 +128,8 @@ class Mesh(RBC):
             # if fix:
             #     verts, faces = pymeshfix.clean_from_arrays(verts, faces)
             os.makedirs(os.path.dirname(rm_file_path), exist_ok=True)
-            pkl.dump([verts, faces], open(rm_file_path, "wb"))
-        else:
-            gs.logger.debug("Remeshed file (`.rm`) found in cache.")
-            verts, faces = pkl.load(open(rm_file_path, "rb"))
+            with open(rm_file_path, "wb") as file:
+                pkl.dump((verts, faces), file)
 
         self._mesh = trimesh.Trimesh(
             vertices=verts,
@@ -319,9 +333,8 @@ class Mesh(RBC):
                 else:
                     meshes = mu.parse_mesh_glb(morph.file, morph.group_by_material, morph.scale, surface)
 
-            elif hasattr(morph, "files") and len(morph.files) > 0:  # for meshset
-                meshes = morph.files
-                assert all([isinstance(v, trimesh.Trimesh) for v in meshes])
+            elif isinstance(morph, gs.options.morphs.MeshSet):
+                assert all(isinstance(v, trimesh.Trimesh) for v in morph.files)
                 meshes = [mu.trimesh_to_mesh(v, morph.scale, surface) for v in meshes]
 
             else:
@@ -344,7 +357,8 @@ class Mesh(RBC):
             else:
                 gs.raise_exception()
 
-            return cls.from_trimesh(tmesh, surface=surface)
+            metadata = {"mesh_path": morph.file} if isinstance(morph, gs.options.morphs.FileMorph) else {}
+            return cls.from_trimesh(tmesh, surface=surface, metadata=metadata)
 
     def set_color(self, color):
         """

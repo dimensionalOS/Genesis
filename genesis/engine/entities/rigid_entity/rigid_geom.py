@@ -6,11 +6,11 @@ import numpy as np
 import skimage
 import taichi as ti
 import torch
+import trimesh
 
 import genesis as gs
 import genesis.utils.geom as gu
 import genesis.utils.mesh as mu
-from genesis.ext import trimesh
 from genesis.repr_base import RBC
 from genesis.utils.misc import tensor_to_array
 
@@ -37,6 +37,8 @@ class RigidGeom(RBC):
         init_pos,
         init_quat,
         needs_coup,
+        contype,
+        conaffinity,
         center_init=None,
         data=None,
     ):
@@ -52,6 +54,8 @@ class RigidGeom(RBC):
         self._friction = friction
         self._sol_params = sol_params
         self._needs_coup = needs_coup
+        self._contype = contype
+        self._conaffinity = conaffinity
         self._is_convex = mesh.is_convex
         self._cell_start = cell_start
         self._vert_start = vert_start
@@ -100,7 +104,6 @@ class RigidGeom(RBC):
 
     def _preprocess(self):
         # compute file name via hashing for caching
-
         self._gsd_path = mu.get_gsd_path(
             self._init_verts,
             self._init_faces,
@@ -109,7 +112,18 @@ class RigidGeom(RBC):
             self._material.sdf_max_res,
         )
 
-        if not os.path.exists(self._gsd_path):
+        # loading pre-computed cache if available
+        is_cached_loaded = False
+        if os.path.exists(self._gsd_path):
+            gs.logger.debug(f"Preprocessed file (`.gsd`) found in cache for geom idx {self._idx}.")
+            try:
+                with open(self._gsd_path, "rb") as file:
+                    gsd_dict = pkl.load(file)
+                is_cached_loaded = True
+            except (EOFError, ModuleNotFoundError, pkl.UnpicklingError):
+                gs.logger.info("Ignoring corrupted cache.")
+
+        if not is_cached_loaded:
             with gs.logger.timer(f"Preprocessing geom idx ~~<{self._idx}>~~."):
                 ######## sdf ########
                 lower = self._init_verts.min(axis=0)
@@ -117,20 +131,15 @@ class RigidGeom(RBC):
                 center = (upper + lower) / 2.0
 
                 # NOTE: sdf size is from the center of the lower voxel cell to the center of the upper voxel cell
-                # add padding
+                # add padding. Adjust the cell size to keep resolution within bounds.
                 padding_ratio = 0.2
                 grid_size = (upper - lower).max() * padding_ratio + (upper - lower)
-                sdf_res = np.ceil(grid_size / self._material.sdf_cell_size).astype(int) + 1
-
-                if sdf_res.max() > self._material.sdf_max_res:
-                    sdf_res = np.ceil(sdf_res * self._material.sdf_max_res / sdf_res.max()).astype(int)
-                    sdf_cell_size = grid_size.max() / (sdf_res.max() - 1)
-                elif sdf_res.max() < self._material.sdf_min_res:
-                    sdf_res = np.ceil(sdf_res * self._material.sdf_min_res / sdf_res.max()).astype(int)
-                    sdf_cell_size = grid_size.max() / (sdf_res.max() - 1)
-                else:
-                    sdf_cell_size = self._material.sdf_cell_size
-                sdf_res = np.clip(sdf_res, 3, None)
+                sdf_cell_size = gs.EPS + np.clip(
+                    self._material.sdf_cell_size,
+                    grid_size.max() / (self._material.sdf_max_res - 1),
+                    grid_size.min() / max(self._material.sdf_min_res - 1, 2),
+                )
+                sdf_res = np.ceil(grid_size / sdf_cell_size).astype(int) + 1
 
                 # round up to multiple of sdf_cell_size
                 grid_size = (sdf_res - 1) * sdf_cell_size
@@ -186,7 +195,7 @@ class RigidGeom(RBC):
                 vert_n_neighbors = np.array(vert_n_neighbors)
                 vert_neighbor_start = np.array(vert_neighbor_start)
 
-                # compile
+                # caching
                 gsd_dict = {
                     "sdf_res": sdf_res,
                     "sdf_val": sdf_val,
@@ -203,11 +212,6 @@ class RigidGeom(RBC):
                 os.makedirs(os.path.dirname(self._gsd_path), exist_ok=True)
                 with open(self._gsd_path, "wb") as file:
                     pkl.dump(gsd_dict, file)
-        else:
-            gs.logger.debug(f"Preprocessed `.gsd` file found in cache for geom idx {self._idx}.")
-
-            with open(self._gsd_path, "rb") as file:
-                gsd_dict = pkl.load(file)
 
         self._sdf_res = gsd_dict["sdf_res"]
         self._sdf_val = gsd_dict["sdf_val"]
@@ -223,11 +227,17 @@ class RigidGeom(RBC):
         self.vert_neighbor_start = gsd_dict["vert_neighbor_start"]
 
     def _compute_sd(self, query_points):
-        sd, _, _ = igl.signed_distance(query_points, self._sdf_verts, self._sdf_faces)
+        try:
+            sd, _, _ = igl.signed_distance(query_points, self._sdf_verts, self._sdf_faces)
+        except:
+            sd, _, _, _ = igl.signed_distance(query_points, self._sdf_verts, self._sdf_faces)
         return sd
 
     def _compute_closest_verts(self, query_points):
-        _, closest_faces, _ = igl.signed_distance(query_points, self._init_verts, self._init_faces)
+        try:
+            _, closest_faces, _ = igl.signed_distance(query_points, self._init_verts, self._init_faces)
+        except:
+            _, closest_faces, _, _ = igl.signed_distance(query_points, self._init_verts, self._init_faces)
         verts_ids = self._init_faces[closest_faces]
         verts_ids = verts_ids[
             np.arange(len(query_points)).astype(int),
@@ -588,6 +598,27 @@ class RigidGeom(RBC):
         Get whether the geom needs coupling with other non-rigid entities.
         """
         return self._needs_coup
+
+    @property
+    def contype(self):
+        """
+        Get the contact type of the geometry for collision pair filtering.
+
+        The two geoms are deemed "compatible" (i.e. collisions between them is allowed) if the 'contype' of one geom
+        and the 'conaffinity' of the other geom have a common bit set to 1, i.e.
+        `(geom1.contype & geom2.conaffinity) || (geom2.contype & geom1.conaffinity) == True`. This is a powerful
+        mechanism borrowed from Open Dynamics Engine.
+        """
+        return self._contype
+
+    @property
+    def conaffinity(self):
+        """
+        Get the contact affinity of the geometry for collision pair filtering.
+
+        See `contype` documentation for details.
+        """
+        return self._conaffinity
 
     @property
     def coup_softness(self):

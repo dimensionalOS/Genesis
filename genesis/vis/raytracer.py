@@ -9,13 +9,13 @@ import genesis.utils.mesh as mu
 import genesis.utils.misc as miscu
 import genesis.utils.particle as pu
 from genesis.engine import entities
-from genesis.ext import trimesh
+import trimesh
 
 LRP_PATH = os.path.join(miscu.get_src_dir(), "ext/LuisaRender/build/bin")
 try:
     sys.path.append(LRP_PATH)
     import LuisaRenderPy
-except Exception as e:
+except ImportError as e:
     gs.raise_exception(f"Failed to import LuisaRenderer. {e.__class__.__name__}: {e}")
 
 logging_class = {
@@ -123,7 +123,7 @@ class MeshLight(ShapeLight):
 
 class Raytracer:
     def __init__(self, options, vis_options):
-        self.cuda_device = options.cuda_device
+        self.device_index = options.device_index
         self.logging_level = options.logging_level
         self.state_limit = options.state_limit
         self.tracing_depth = options.tracing_depth
@@ -132,7 +132,7 @@ class Raytracer:
         self.clamp_normal = options.normal_diff_clamp
 
         self.render_particle_as = vis_options.render_particle_as
-        self.n_rendered_envs = vis_options.n_rendered_envs
+        self.rendered_envs_idx = vis_options.rendered_envs_idx
 
         self._scene = None
         self._shapes = dict()
@@ -174,7 +174,8 @@ class Raytracer:
         LuisaRenderPy.init(
             context_path=LRP_PATH,
             context_id=str(gs.UID()),
-            cuda_device=self.cuda_device,
+            backend="cuda" if gs.platform != "macOS" else "metal",
+            device_index=self.device_index,
             log_level=logging_class[self.logging_level],
         )
 
@@ -207,8 +208,8 @@ class Raytracer:
         self.scene = scene
         self.sim = scene.sim
         self.visualizer = scene.visualizer
-        if self.n_rendered_envs is None:
-            self.n_rendered_envs = self.sim._B
+        if self.rendered_envs_idx is None:
+            self.rendered_envs_idx = list(range(self.sim._B))
 
         self._scene = LuisaRenderPy.create_scene()
         self._scene.init(
@@ -328,9 +329,9 @@ class Raytracer:
 
         # FEM entities
         if self.sim.fem_solver.is_active():
-            # TODO: See fem_entity.py:230
-            # TODO: @johnson
-            self.add_deformable("xxx")
+            for fem_entity in self.sim.fem_solver.entities:
+                if fem_entity.surface.vis_mode == "visual":
+                    self.add_deformable(str(fem_entity.id))
 
         gs.exit_callbacks.append(self.destroy)
 
@@ -501,7 +502,7 @@ class Raytracer:
             )
 
     def add_rigid_batch(self, name, vertices, triangles, normals, uvs):
-        for batch_index in range(self.n_rendered_envs):
+        for batch_index in self.rendered_envs_idx:
             self.add_rigid(name, vertices, triangles, normals, uvs, batch_index)
 
     def update_rigid(self, name, matrix, batch_index=None):
@@ -519,7 +520,7 @@ class Raytracer:
             self._scene.update_shape(self._shapes[shape_name])
 
     def update_rigid_batch(self, name, matrices):
-        for batch_index in range(self.n_rendered_envs):
+        for batch_index in self.rendered_envs_idx:
             self.update_rigid(name, matrices[batch_index], batch_index)
 
     def add_deformable(self, name, batch_index=None):
@@ -785,16 +786,24 @@ class Raytracer:
         # FEM entities
         if self.sim.fem_solver.is_active():
             vertices_all, triangles_all = self.sim.fem_solver.get_state_render(self.sim.cur_substep_local)
-
-            # TODO: See fem_entity.py:230
             vertices_all = vertices_all.to_numpy()
             triangles_all = triangles_all.to_numpy()
 
-            # TODO: @johnson
-            if len(self.sim.fem_solver.entities) > 1:
-                raise Exception("FEM entities more than 1!")
+            for fem_entity in self.sim.fem_solver.entities:
+                if fem_entity.surface.vis_mode == "visual":
+                    vertices = vertices_all[fem_entity.v_start : fem_entity.v_start + fem_entity.n_vertices]
+                    triangles = (
+                        triangles_all[fem_entity.s_start : (fem_entity.s_start + fem_entity.n_surfaces)]
+                        - fem_entity.v_start
+                    )
 
-            self.update_deformable("xxx", vertices_all, triangles_all, np.array([]), np.array([]))
+                    self.update_deformable(
+                        str(fem_entity.uid),
+                        vertices,
+                        triangles,
+                        trimesh.Trimesh(vertices=vertices, faces=triangles, process=False).vertex_normals,
+                        np.array([]),
+                    )
 
         # Flush the update buffer.
         self._scene.update_scene(time=self._t)

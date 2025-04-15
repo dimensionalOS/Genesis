@@ -3,6 +3,7 @@ import torch
 
 import genesis as gs
 import genesis.utils.geom as gu
+from genesis.utils.misc import DeprecationError
 from genesis.repr_base import RBC
 
 
@@ -17,6 +18,7 @@ class RigidJoint(RBC):
         entity,
         name,
         idx,
+        link_idx,
         q_start,
         dof_start,
         n_qs,
@@ -24,6 +26,8 @@ class RigidJoint(RBC):
         type,
         pos,
         quat,
+        init_qpos,
+        sol_params,
         dofs_motion_ang,
         dofs_motion_vel,
         dofs_limit,
@@ -35,7 +39,6 @@ class RigidJoint(RBC):
         dofs_kp,
         dofs_kv,
         dofs_force_range,
-        init_qpos,
     ):
         self._name = name
         self._entity = entity
@@ -43,6 +46,7 @@ class RigidJoint(RBC):
 
         self._uid = gs.UID()
         self._idx = idx
+        self._link_idx = link_idx
         self._q_start = q_start
         self._dof_start = dof_start
         self._n_qs = n_qs
@@ -51,6 +55,7 @@ class RigidJoint(RBC):
         self._pos = pos
         self._quat = quat
         self._init_qpos = init_qpos
+        self._sol_params = sol_params
 
         self._dofs_motion_ang = dofs_motion_ang
         self._dofs_motion_vel = dofs_motion_vel
@@ -75,75 +80,66 @@ class RigidJoint(RBC):
     # -------------------------------- real-time state -----------------------------------
     # ------------------------------------------------------------------------------------
 
-    @gs.assert_built
     def get_pos(self):
         """
         Get the position of the joint in the world frame.
         """
-        tensor = torch.empty(self._solver._batch_shape(3, True), dtype=gs.tc_float, device=gs.device)
-        self._kernel_get_pos(tensor)
-        if self._solver.n_envs == 0:
-            tensor = tensor.squeeze(0)
-        return tensor
+        raise DeprecationError(
+            "This method has been removed. Please consider operating at link-level to get the cartesian position in "
+            "word frame."
+        )
 
-    @ti.kernel
-    def _kernel_get_pos(self, tensor: ti.types.ndarray()):
-
-        for i_b in range(self._solver._B):
-            I_l = [self._idx, i_b] if ti.static(self._solver._options.batch_links_info) else self._idx
-            l_info = self._solver.links_info[I_l]
-            i_p = l_info.parent_idx
-
-            p_pos = ti.Vector.zero(gs.ti_float, 3)
-            p_quat = gu.ti_identity_quat()
-
-            if i_p != -1:
-                p_pos = self._solver.links_state[i_p, i_b].pos
-                p_quat = self._solver.links_state[i_p, i_b].quat
-
-            tmp_pos, tmp_quat = gu.ti_transform_pos_quat_by_trans_quat(l_info.pos, l_info.quat, p_pos, p_quat)
-
-            joint_pos, joint_quat = gu.ti_transform_pos_quat_by_trans_quat(
-                l_info.joint_pos, l_info.joint_quat, tmp_pos, tmp_quat
-            )
-
-            for i in ti.static(range(3)):
-                tensor[i_b, i] = joint_pos[i]
-
-    @gs.assert_built
     def get_quat(self):
         """
         Get the quaternion of the joint in the world frame.
         """
-        tensor = torch.empty(self._solver._batch_shape(4, True), dtype=gs.tc_float, device=gs.device)
-        self._kernel_get_quat(tensor)
+        raise DeprecationError(
+            "This method has been removed. Please consider operating at link-level to get the cartesian orientation in "
+            "word frame."
+        )
+
+    @gs.assert_built
+    def get_anchor_pos(self):
+        """
+        Get the anchor position of the joint in the world frame.
+
+        Mathematically, the anchor point corresponds to the point that is fixed wrt parent link and is coincident with
+        the joint for the neutral configuration qpos0. This means that this point moves under the effect of the
+        generalized coordinates corresponding to this joint (and all its ancestors in the kinematic tree). Physically,
+        the anchor point is the "output" of the joint transmission, on which the child body is welded.
+        """
+        tensor = torch.empty(self._solver._batch_shape(3, True), dtype=gs.tc_float, device=gs.device)
+        self._kernel_get_anchor_pos(tensor)
         if self._solver.n_envs == 0:
             tensor = tensor.squeeze(0)
         return tensor
 
     @ti.kernel
-    def _kernel_get_quat(self, tensor: ti.types.ndarray()):
-
+    def _kernel_get_anchor_pos(self, tensor: ti.types.ndarray()):
         for i_b in range(self._solver._B):
-            I_l = [self._idx, i_b] if ti.static(self._solver._options.batch_links_info) else self._idx
-            l_info = self._solver.links_info[I_l]
-            i_p = l_info.parent_idx
+            xpos = self._solver.joints_state[self._idx, i_b].xanchor
+            for i in ti.static(range(3)):
+                tensor[i_b, i] = xpos[i]
 
-            p_pos = ti.Vector.zero(gs.ti_float, 3)
-            p_quat = gu.ti_identity_quat()
+    @gs.assert_built
+    def get_anchor_axis(self):
+        """
+        Get the anchor axis of the joint in the world frame.
 
-            if i_p != -1:
-                p_pos = self._solver.links_state[i_p, i_b].pos
-                p_quat = self._solver.links_state[i_p, i_b].quat
+        See `RigidJoint.get_anchor_pos` documentation for details about the notion on anchor point.
+        """
+        tensor = torch.empty(self._solver._batch_shape(3, True), dtype=gs.tc_float, device=gs.device)
+        self._kernel_get_anchor_axis(tensor)
+        if self._solver.n_envs == 0:
+            tensor = tensor.squeeze(0)
+        return tensor
 
-            tmp_pos, tmp_quat = gu.ti_transform_pos_quat_by_trans_quat(l_info.pos, l_info.quat, p_pos, p_quat)
-
-            joint_pos, joint_quat = gu.ti_transform_pos_quat_by_trans_quat(
-                l_info.joint_pos, l_info.joint_quat, tmp_pos, tmp_quat
-            )
-
-            for i in ti.static(range(4)):
-                tensor[i_b, i] = joint_quat[i]
+    @ti.kernel
+    def _kernel_get_anchor_axis(self, tensor: ti.types.ndarray()):
+        for i_b in range(self._solver._B):
+            xaxis = self._solver.joints_state[self._idx, i_b].xaxis
+            for i in ti.static(range(3)):
+                tensor[i_b, i] = xaxis[i]
 
     # ------------------------------------------------------------------------------------
     # ----------------------------------- properties -------------------------------------
@@ -182,7 +178,7 @@ class RigidJoint(RBC):
         """
         Returns the child link that of the joint.
         """
-        return self._solver.links[self._idx]
+        return self._solver.links[self._link_idx]
 
     @property
     def idx(self):
@@ -239,6 +235,13 @@ class RigidJoint(RBC):
         Returns the initial quaternion of the joint in the world frame.
         """
         return self._quat
+
+    @property
+    def sol_params(self):
+        """
+        Retruns the solver parameters of the joint.
+        """
+        return self._sol_params
 
     @property
     def q_start(self):

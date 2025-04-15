@@ -7,8 +7,7 @@ Author: Matthew Matl
 import copy
 
 import numpy as np
-
-from genesis.ext import trimesh
+import trimesh
 
 from .constants import GLTF
 from .material import MetallicRoughnessMaterial
@@ -82,7 +81,7 @@ class Mesh(object):
     def bounds(self):
         """(2,3) float : The axis-aligned bounds of the mesh."""
         if self._bounds is None:
-            bounds = np.array([[np.infty, np.infty, np.infty], [-np.infty, -np.infty, -np.infty]])
+            bounds = np.array([[np.inf, np.inf, np.inf], [-np.inf, -np.inf, -np.inf]])
             for p in self.primitives:
                 bounds[0] = np.minimum(bounds[0], p.bounds[0])
                 bounds[1] = np.maximum(bounds[1], p.bounds[1])

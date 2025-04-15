@@ -21,7 +21,8 @@ scene = gs.Scene(
         gravity=(0, 0, -9.8),
         enable_collision=True,
         enable_self_collision=False,
-        contact_resolve_time=0.02,  # avoid the rigid contact solver being too stiff otherwise will cause large impulse (especially we have small dt for rigid solver)
+        enable_adjacent_collision=False,
+        constraint_resolve_time=0.02,  # avoid the rigid contact solver being too stiff otherwise will cause large impulse (especially we have small dt for rigid solver)
     ),
     mpm_options=gs.options.MPMOptions(
         dt=dt,

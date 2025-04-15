@@ -1,9 +1,11 @@
-import numpy as np
-import pickle
 import os
 
+import numpy as np
+import pickle
+import trimesh
+
 import genesis as gs
-from genesis.ext import trimesh
+from genesis.ext import fast_simplification
 from genesis.ext.isaacgym import terrain_utils as isaacgym_terrain_utils
 from genesis.options.morphs import Terrain
 
@@ -33,7 +35,7 @@ def parse_terrain(morph: Terrain, surface):
     """
 
     if morph.from_stored is not None:
-        terrain_dir = os.path.join(get_assets_dir(), f"terrain/{morph.name}")
+        terrain_dir = os.path.join(os.path.join(get_assets_dir(), f"terrain/{morph.name}"), morph.from_stored)
         os.makedirs(terrain_dir, exist_ok=True)
 
         tmesh = trimesh.load(os.path.join(terrain_dir, "tmesh.stl"))
@@ -342,7 +344,11 @@ def convert_heightfield_to_watertight_trimesh(height_field_raw, horizontal_scale
 
     # This a uniformly-distributed full mesh, which gives faster sdf generation
     sdf_mesh = trimesh.Trimesh(vertices, triangles, process=False)
-    # This is the mesh used for non-sdf purposes. It's losslessly simplified from the full mesh, to save memory cost for storing verts and faces
-    mesh = sdf_mesh.simplify_quadric_decimation(face_count=0, lossless=True)
+
+    # This is the mesh used for non-sdf purposes.
+    # It's losslessly simplified from the full mesh, to save memory cost for storing verts and faces.
+    mesh = trimesh.Trimesh(
+        *fast_simplification.simplify(sdf_mesh.vertices, sdf_mesh.faces, target_count=0, lossless=True)
+    )
 
     return mesh, sdf_mesh
