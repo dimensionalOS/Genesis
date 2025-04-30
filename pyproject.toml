@@ -18,6 +18,8 @@ dependencies = [
     "trimesh",
     "scipy >= 1.14",
     "libigl",
+    # Cross-platform library to get various kind of CPU information such as model name
+    "py-cpuinfo",
     # * Mujoco 3.3 made Native CCD an opt-out option instead of opt-in,
     #   which requires setting the disableflags 'mjDSBL_NATIVECCD'.
     "mujoco >= 3.3.0, < 3.4.0",
@@ -46,6 +48,8 @@ dependencies = [
     "scikit-image",
     # Convex decomposition library
     "coacd",
+    # Ray casting used in mesh to height field conversion
+    "rtree",
     # Used for loading raytracing special texture images used by LuisaRender
     "OpenEXR",
     # Motion Planning library
@@ -101,13 +105,11 @@ log_cli_level = "WARNING"
 gs = "genesis._main:main"
 
 [project.optional-dependencies]
-gen = [
-    "openai",
-]
 dev = [
     "black",
     "pytest",
     "pytest-xdist",
+    "pytest-forked",
     "pytest-random-order",
     "huggingface_hub",
 ]

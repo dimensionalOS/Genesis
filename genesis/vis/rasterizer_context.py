@@ -33,6 +33,15 @@ class RasterizerContext:
         self.rendered_envs_idx = options.rendered_envs_idx
         self.env_separate_rigid = options.env_separate_rigid
 
+        # nodes
+        self.world_frame_node = None
+        self.link_frame_nodes = dict()
+        self.frustum_nodes = dict()  # nodes camera frustums
+        self.rigid_nodes = dict()
+        self.static_nodes = dict()  # used across all frames
+        self.dynamic_nodes = list()  # nodes that live within single frame
+        self.external_nodes = dict()  # nodes added by external user
+
         self.init_meshes()
 
     def init_meshes(self):
@@ -72,15 +81,6 @@ class RasterizerContext:
 
         self.jit = JITRenderer(self._scene, [], [])
 
-        # nodes
-        self.world_frame_node = None
-        self.link_frame_nodes = dict()
-        self.frustum_nodes = dict()  # nodes camera frustums
-        self.rigid_nodes = dict()
-        self.static_nodes = dict()  # used across all frames
-        self.dynamic_nodes = list()  # nodes that live within single frame
-        self.external_nodes = dict()  # nodes added by external user
-
         self.on_lights()
 
         if self.show_world_frame:
@@ -100,6 +100,20 @@ class RasterizerContext:
 
         # segmentation mapping
         self.generate_seg_vars()
+
+    def destroy(self):
+        self.clear_dynamic_nodes()
+
+        for node_registry in (
+            self.link_frame_nodes,
+            self.frustum_nodes,
+            self.rigid_nodes,
+            self.static_nodes,
+            self.external_nodes,
+        ):
+            for external_node in node_registry.values():
+                self.remove_node(external_node)
+            node_registry.clear()
 
     def reset(self):
         self._t = -1
@@ -634,6 +648,12 @@ class RasterizerContext:
                         triangles_all[fem_entity.s_start : (fem_entity.s_start + fem_entity.n_surfaces)]
                         - fem_entity.v_start
                     )
+
+                    # Select only vertices used in surface triangles, then reindex triangles against the new vertex list
+                    surf_idx, inv = np.unique(triangles.flat, return_inverse=True)
+                    triangles = inv.reshape(triangles.shape)
+                    vertices = vertices[surf_idx]
+
                     mesh = trimesh.Trimesh(vertices, triangles, process=False)
                     mesh.visual = mu.surface_uvs_to_trimesh_visual(
                         fem_entity.surface, n_verts=fem_entity.n_surface_vertices

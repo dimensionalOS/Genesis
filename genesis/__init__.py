@@ -148,7 +148,7 @@ def init(
     ti_ivec4 = ti.types.vector(4, ti_int)
 
     global EPS
-    EPS = eps
+    EPS = max(eps, np.finfo(np_float).eps)
 
     taichi_kwargs = {}
     if gs.logger.level == _logging.CRITICAL:
@@ -246,10 +246,6 @@ def destroy():
     # Display any buffered error message if logger is configured
     global logger
     if logger:
-        if logger._error_msg is not None:
-            logger.error(logger._error_msg)
-            logger._error_msg = None
-
         logger.info("💤 Exiting Genesis and caching compiled kernels...")
 
     # Call all exit callbacks
@@ -309,13 +305,14 @@ class GenesisException(Exception):
 
 
 def _custom_excepthook(exctype, value, tb):
-    if issubclass(exctype, GenesisException):
-        # We don't want the traceback info to trace till this __init__.py file.
-        stack_trace = "".join(traceback.format_exception(exctype, value, tb)[:-2])
-        print(stack_trace)
-    else:
-        # Use the system's default excepthook for other exception types
-        sys.__excepthook__(exctype, value, tb)
+    print("".join(traceback.format_exception(exctype, value, tb)))
+
+    # Logger the exception right before exit if possible
+    try:
+        gs.logger.error(f"{exctype.__name__}: {value}")
+    except AttributeError:
+        # Logger may not be configured at this point
+        pass
 
 
 # Set the custom excepthook to handle GenesisException
