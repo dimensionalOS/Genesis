@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../lcm_dimos_msgs"
+		}
+	],
+	"settings": {}
+}

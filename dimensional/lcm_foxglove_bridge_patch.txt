@@ -1,0 +1,59 @@
+# Apply these changes manually to the lcm_foxglove_bridge_threaded.py script
+
+# Step 1: Add this mapping code after the imports section
+# ======================================================
+
+# Mapping from PointField datatype values to Foxglove PackedElementFieldNumericType enum values
+POINTFIELD_DATATYPE_TO_FOXGLOVE = {
+    1: 1,  # INT8
+    2: 2,  # UINT8
+    3: 3,  # INT16
+    4: 4,  # UINT16
+    5: 5,  # INT32
+    6: 6,  # UINT32
+    7: 7,  # FLOAT32
+    8: 8,  # FLOAT64
+}
+
+# Type name to numeric type mapping
+POINTFIELD_TYPE_STRINGS = {
+    'int8': 1,
+    'uint8': 2,
+    'int16': 3,
+    'uint16': 4,
+    'int32': 5,
+    'uint32': 6,
+    'float32': 7,
+    'float64': 8,
+}
+
+# Step 2: Find the _convert_pointcloud function and update it
+# ==========================================================
+
+# Find this code in the function:
+fields = [
+    PackedElementField(name='x', offset=0, type='float32'),
+    PackedElementField(name='y', offset=4, type='float32'),
+    PackedElementField(name='z', offset=8, type='float32'),
+]
+
+# Replace it with:
+fields = [
+    PackedElementField(name='x', offset=0, type=POINTFIELD_TYPE_STRINGS['float32']),
+    PackedElementField(name='y', offset=4, type=POINTFIELD_TYPE_STRINGS['float32']),
+    PackedElementField(name='z', offset=8, type=POINTFIELD_TYPE_STRINGS['float32']),
+]
+
+# Step 3: Find the code that handles point cloud fields:
+# =====================================================
+
+# Find this code:
+for field in msg.fields:
+    # Logic to determine field type...
+    fields.append(PackedElementField(name=field.name, offset=field.offset, type='float32'))  # or whatever type string is used
+
+# Replace with:
+for field in msg.fields:
+    # Convert datatype (integer) to the appropriate Foxglove enum value
+    foxglove_type = POINTFIELD_DATATYPE_TO_FOXGLOVE.get(field.datatype, 7)  # Default to float32 (7) if unknown
+    fields.append(PackedElementField(name=field.name, offset=field.offset, type=foxglove_type))

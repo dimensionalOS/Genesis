@@ -140,6 +140,14 @@ install(DIRECTORY urdf
   DESTINATION share/${PROJECT_NAME}/
 )
 
+install(DIRECTORY meshes
+  DESTINATION share/${PROJECT_NAME}/
+)
+
+install(DIRECTORY piper_description
+  DESTINATION share/${PROJECT_NAME}/
+)
+
 install(DIRECTORY srdf
   DESTINATION share/${PROJECT_NAME}/
 )
