@@ -68,7 +68,7 @@ class GenesisLcmHandler:
         if self.lcm_thread is not None:
             self.lcm_thread.join(timeout=1.0)
     
-    def publish_camera_info(self, width, height, channel_name, frame_id="pan_tilt_head", fov=55):
+    def publish_camera_info(self, width, height, channel_name, frame_id="camera_center_link", fov=55):
         """
         Publish camera intrinsic parameters as a CameraInfo message
         :param width: image width in pixels
@@ -87,7 +87,8 @@ class GenesisLcmHandler:
             
             # Create a Header
             header = Header()
-            header.stamp = int(time.time() * 1e9)  # Current time in nanoseconds
+            header.stamp.sec = int(time.time())
+            header.stamp.nsec = int((time.time() - int(time.time())) * 1e9)
             header.frame_id = frame_id
             
             # Create RegionOfInterest object explicitly first
@@ -168,8 +169,9 @@ class GenesisLcmHandler:
             
             # Create and set header
             img_msg.header = Header()
-            img_msg.header.stamp = int(time.time() * 1e9)  # Current time in nanoseconds
-            img_msg.header.frame_id = "pan_tilt_head"
+            img_msg.header.stamp.sec = int(time.time())
+            img_msg.header.stamp.nsec = int((time.time() - img_msg.header.stamp.sec) * 1e9)
+            img_msg.header.frame_id = "camera_center_link"
             
             # Get dimensions
             height, width = image.shape[:2]
@@ -299,23 +301,13 @@ def main():
     plane = scene.add_entity(gs.morphs.Plane())
 
     # Load the robot from the URDF file.
-    try:
-        robot = scene.add_entity(
-            gs.morphs.URDF(
-                file  = '../assets/devkit_base_descr.urdf',
-                pos   = (0, 0, 0),
-                euler = (0, 0, 0),
-            )
+    robot = scene.add_entity(
+        gs.morphs.URDF(
+            file  = '../assets/devkit_base_descr.urdf',
+            pos   = (0, 0, 0),
+            euler = (0, 0, 0),
+            links_to_keep = ["camera_center_link"]
         )
-    except Exception as e:
-        print(f"Error loading URDF: {e}")
-        print("Trying alternate path...")
-        robot = scene.add_entity(
-            gs.morphs.URDF(
-                file  = '/home/yashas/Documents/dimensional/Genesis/assets/devkit_base_descr.urdf',
-                pos   = (0, 0, 0),
-                euler = (0, 0, 0),
-            )
         )
 
     box = scene.add_entity(gs.morphs.Box(pos=(2, 0, 2), size=(1, 1, 1)))
@@ -327,7 +319,7 @@ def main():
         pos = (0, 0, 0),    # Will be updated based on pan_tilt_head position
         lookat = (0, 0, 0), # Will be updated to look forward from the head
         fov = 55,           # Field of view
-        GUI = True,         # Show this camera feed in a window
+        GUI = False,         # Show this camera feed in a window
     )
 
     # Define camera offset from pan_tilt_head link origin (in local coordinates)
@@ -441,17 +433,21 @@ def main():
     
     try:
         for step in range(10000):
+            target_positions = np.array([genesis_lcm_handler.joint_positions.get(name, 0.0) for name in valid_joint_names])
+            # target_positions = np.array([0.0 for name in valid_joint_names])
             if step < 100:
                 # Initialize positions during startup
                 if num_dofs > 0:
-                    target_positions = np.array([genesis_lcm_handler.joint_positions.get(name, 0.0) for name in valid_joint_names])
                     robot.set_dofs_position(target_positions, dofs_idx)
+                robot.set_pos([0.0, 0.0, 0.0])
+                quat = R.from_euler('zyx', [0.0, 0.0, 0.0], degrees=True).as_quat()
+                robot.set_quat(quat)
                 scene.step()
                 continue
                 
             # Get joint positions from LCM messages
             if num_dofs > 0:
-                target_positions = np.array([genesis_lcm_handler.joint_positions.get(name, 0.0) for name in valid_joint_names])
+                # robot.set_dofs_position(target_positions, dofs_idx)
                 robot.control_dofs_position(target_positions, dofs_idx)
 
             # Set robot base pose to origin (can be updated to use LCM data)
@@ -465,9 +461,9 @@ def main():
             
             try:
                 # Get the current position of the pan_tilt_head link
-                link = robot.get_link('pan_tilt_head')
+                link = robot.get_link('camera_center_link')
                 if link is None:
-                    print("Warning: pan_tilt_head link not found")
+                    print("Warning: camera_center_link link not found")
                     continue
                     
                 # Get head position
@@ -475,7 +471,8 @@ def main():
                 
                 # Calculate the camera position with offset, even if we can't use the link's quaternion
                 # Apply a simple offset in world coordinates for now
-                camera_pos = head_pos + camera_offset
+                # camera_pos = head_pos + camera_offset
+                camera_pos = head_pos
                 
                 # Get current joint angles directly from the target positions
                 pan_angle = 0.0
