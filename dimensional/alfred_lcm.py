@@ -308,9 +308,27 @@ def main():
             euler = (0, 0, 0),
             links_to_keep = ["camera_center_link"]
         )
-        )
+    )
 
-    box = scene.add_entity(gs.morphs.Box(pos=(2, 0, 2), size=(1, 1, 1)))
+    glass = scene.add_entity(
+        gs.morphs.Mesh(
+            file="../assets/glass.obj",
+            pos=(.8, 0.2, 1.1),
+            scale=0.05,
+            euler=(90, 0, 0),
+        )
+    )
+
+    bottle = scene.add_entity(
+        gs.morphs.Mesh(
+            file="../assets/water_bottle.obj",
+            pos=(.8, -0.2, 1.1),
+            scale=0.01,
+            euler=(90, 0, 0),
+        )
+    )
+
+    box = scene.add_entity(gs.morphs.Box(pos=(1, 0, 0.5), size=(1, 1, 1)))
 
     ########################## Robot Camera ##########################
     # Add a camera that will be mounted on the pan-tilt mechanism
@@ -319,7 +337,7 @@ def main():
         pos = (0, 0, 0),    # Will be updated based on pan_tilt_head position
         lookat = (0, 0, 0), # Will be updated to look forward from the head
         fov = 55,           # Field of view
-        GUI = False,         # Show this camera feed in a window
+        GUI = True,         # Show this camera feed in a window
     )
 
     # Define camera offset from pan_tilt_head link origin (in local coordinates)
@@ -432,9 +450,12 @@ def main():
     image_publish_interval = 0.1  # Publish images at 10 Hz
     
     try:
-        for step in range(10000):
+        for step in range(100000):
             target_positions = np.array([genesis_lcm_handler.joint_positions.get(name, 0.0) for name in valid_joint_names])
             # target_positions = np.array([0.0 for name in valid_joint_names])
+            # target_positions[0] = -.3
+            # target_positions[2] = -np.pi/4
+
             if step < 100:
                 # Initialize positions during startup
                 if num_dofs > 0:
